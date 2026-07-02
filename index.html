@@ -596,6 +596,63 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .cpc-tbl .cpc-val { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--teal) }
 .cpc-tbl .insert-name { font-family: var(--mono); font-weight: 700; color: var(--navy) }
 
+/* ─── owner / operator mode ─── */
+.mode-chip {
+  border: 1px solid var(--rule2);
+  background: var(--off);
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: .56rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+  padding: .32rem .6rem;
+  color: var(--mut);
+  cursor: pointer;
+  min-height: 28px;
+}
+.mode-chip.owner {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--teal-tint);
+}
+.mode-chip.operator:hover { background: var(--off2); color: var(--navy); }
+.pin-overlay {
+  position: fixed; inset: 0;
+  background: rgba(1, 20, 30, .55);
+  z-index: 1100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem;
+}
+.pin-card {
+  background: var(--W);
+  border-radius: 4px;
+  padding: 1.6rem 1.4rem;
+  width: 100%; max-width: 340px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.3);
+}
+.pin-title { font-weight: 800; color: var(--navy); font-size: 1rem; margin-bottom: .3rem }
+.pin-sub { font-size: .75rem; color: var(--mut); margin-bottom: 1rem; line-height: 1.55 }
+.pin-lbl {
+  display: block;
+  font-size: .6rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--mut);
+  margin: .7rem 0 .3rem;
+}
+.pin-input {
+  width: 100%;
+  font-size: 1.25rem;
+  letter-spacing: .35em;
+  text-align: center;
+  padding: .5rem .6rem;
+  border: 1px solid var(--rule2);
+  border-radius: 2px;
+  font-family: var(--mono);
+}
+.pin-err { color: var(--bad); font-size: .72rem; min-height: 1rem; margin-top: .45rem; text-align: center; font-weight: 600 }
+.pin-acts { display: flex; gap: .6rem; margin-top: .85rem }
+.setup-pin-row { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem }
+.setup-pin-note { font-size: .68rem; color: var(--mut); margin: -.3rem 0 1rem; line-height: 1.5 }
+
 /* ─── setup / first-run ─── */
 .setup-split {
   display: flex;
@@ -841,6 +898,7 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
       <span class="bar-app">Machining Log</span>
       <span id="bar-crumb" class="bar-crumb" style="display:none"></span>
       <div class="bar-right">
+        <button id="mode-chip" class="mode-chip" style="display:none" onclick="modeChipClick()" type="button"></button>
         <div class="bar-clock" aria-hidden="true">
           <div class="t" id="clock-t"></div>
           <div class="d" id="clock-d"></div>
@@ -1074,6 +1132,7 @@ function getTrialDaysLeft() {
 
 function trialBanner() {
   if (getLicenseStatus() !== 'trial') return '';
+  if (hasOwnerPin() && !isOwner()) return ''; // operators don't see subscription info
   const days = getTrialDaysLeft();
   return `<div class="trial-bar">
     <span class="trial-bar-txt"><strong>${days} day${days !== 1 ? 's' : ''} left</strong> in your free trial</span>
@@ -1086,6 +1145,257 @@ function datalist(id, histKey) {
   if (!dl) return;
   const items = db.history[histKey] || [];
   dl.innerHTML = items.map(v => `<option value="${esc(v)}">`).join('');
+}
+
+// ── owner / operator mode ─────────────────────────────────────────
+// Client-side deterrence, not cryptographic security. The synced Google
+// Sheet history remains the audit source of truth.
+const OWNER_SESSION_KEY = 'toolflux.machlog.owner';
+const PIN_ATTEMPT_KEY = 'toolflux.machlog.pinAttempts';
+const OWNER_TIMEOUT_MS = 15 * 60 * 1000;
+const OWNER_VIEWS = ['settings', 'inventory', 'report', 'newjob', 'paywall'];
+
+// Pure-JS synchronous SHA-256 — crypto.subtle is unavailable on some
+// file:// contexts and old shop-PC browsers, so no async, no dependencies.
+function sha256Hex(msg) {
+  function rotr(n, x) { return (x >>> n) | (x << (32 - n)); }
+  const K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  let H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const bytes = [];
+  for (let i = 0; i < msg.length; i++) {
+    let c = msg.codePointAt(i);
+    if (c > 0xFFFF) i++;
+    if (c < 0x80) bytes.push(c);
+    else if (c < 0x800) bytes.push(0xC0 | (c >> 6), 0x80 | (c & 63));
+    else if (c < 0x10000) bytes.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+    else bytes.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+  }
+  const bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  bytes.push(0, 0, 0, 0, (bitLen >>> 24) & 255, (bitLen >>> 16) & 255, (bitLen >>> 8) & 255, bitLen & 255);
+  const w = new Array(64);
+  for (let off = 0; off < bytes.length; off += 64) {
+    for (let i = 0; i < 16; i++) {
+      w[i] = (bytes[off + i*4] << 24) | (bytes[off + i*4 + 1] << 16) | (bytes[off + i*4 + 2] << 8) | bytes[off + i*4 + 3];
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(7, w[i-15]) ^ rotr(18, w[i-15]) ^ (w[i-15] >>> 3);
+      const s1 = rotr(17, w[i-2]) ^ rotr(19, w[i-2]) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(6,e) ^ rotr(11,e) ^ rotr(25,e);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+      const S0 = rotr(2,a) ^ rotr(13,a) ^ rotr(22,a);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H = [(H[0]+a)|0,(H[1]+b)|0,(H[2]+c)|0,(H[3]+d)|0,(H[4]+e)|0,(H[5]+f)|0,(H[6]+g)|0,(H[7]+h)|0];
+  }
+  return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+}
+
+// PIN is salted with installId so identical PINs hash differently per customer
+function pinHash(pin) { return sha256Hex((db.settings.installId || 'tf') + ':' + String(pin)); }
+function hasOwnerPin() { return !!(db.settings && db.settings.ownerPinHash); }
+
+function ownerSession() {
+  try { return JSON.parse(sessionStorage.getItem(OWNER_SESSION_KEY) || 'null'); } catch (e) { return null; }
+}
+
+function isOwner() {
+  if (!hasOwnerPin()) return true; // no PIN configured — legacy install keeps full access
+  const s = ownerSession();
+  if (!s || !s.la) return false;
+  if (Date.now() - s.la > OWNER_TIMEOUT_MS) { sessionStorage.removeItem(OWNER_SESSION_KEY); return false; }
+  return true;
+}
+
+function touchOwnerActivity() {
+  const s = ownerSession();
+  if (!s || !s.la) return;
+  if (Date.now() - s.la > OWNER_TIMEOUT_MS) { sessionStorage.removeItem(OWNER_SESSION_KEY); return; }
+  if (Date.now() - s.la < 30000) return; // throttle writes
+  s.la = Date.now();
+  sessionStorage.setItem(OWNER_SESSION_KEY, JSON.stringify(s));
+}
+
+function unlockOwner() { sessionStorage.setItem(OWNER_SESSION_KEY, JSON.stringify({ la: Date.now() })); }
+
+function lockOwner(silent) {
+  sessionStorage.removeItem(OWNER_SESSION_KEY);
+  closePinModal();
+  if (!silent) toast('Locked — Operator Mode');
+  render();
+}
+
+function requireOwner() {
+  if (isOwner()) return true;
+  openPinDialog();
+  return false;
+}
+
+// Brute-force damper: 5 wrong tries → 60 s cooldown (per browser session)
+function pinAttemptsBlocked() {
+  try {
+    const a = JSON.parse(sessionStorage.getItem(PIN_ATTEMPT_KEY) || 'null');
+    if (!a) return 0;
+    if (a.n >= 5 && Date.now() - a.t < 60000) return Math.ceil((60000 - (Date.now() - a.t)) / 1000);
+    if (Date.now() - a.t >= 60000) sessionStorage.removeItem(PIN_ATTEMPT_KEY);
+    return 0;
+  } catch (e) { return 0; }
+}
+
+function recordPinAttempt() {
+  let a = null;
+  try { a = JSON.parse(sessionStorage.getItem(PIN_ATTEMPT_KEY) || 'null'); } catch (e) {}
+  if (!a || Date.now() - a.t >= 60000) a = { n: 0, t: Date.now() };
+  a.n++;
+  sessionStorage.setItem(PIN_ATTEMPT_KEY, JSON.stringify(a));
+}
+
+function closePinModal() { const m = document.getElementById('pin-modal'); if (m) m.remove(); }
+
+let pinAfterUnlock = null;
+
+function openPinDialog(afterUnlock) {
+  closePinModal();
+  pinAfterUnlock = typeof afterUnlock === 'function' ? afterUnlock : null;
+  const modal = document.createElement('div');
+  modal.id = 'pin-modal';
+  modal.className = 'pin-overlay';
+  modal.innerHTML = `
+    <div class="pin-card">
+      <div class="pin-title">Owner Unlock</div>
+      <div class="pin-sub">Enter the owner PIN to continue.</div>
+      <form onsubmit="submitPinUnlock(event)">
+        <input id="pin-input" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" aria-label="Owner PIN">
+        <div id="pin-err" class="pin-err"></div>
+        <div class="pin-acts">
+          <button type="submit" class="btn btn-pri" style="flex:1">Unlock</button>
+          <button type="button" class="btn btn-ghost" style="flex:1" onclick="closePinModal()">Cancel</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  setTimeout(() => { const i = document.getElementById('pin-input'); if (i) i.focus(); }, 60);
+}
+
+function submitPinUnlock(e) {
+  e.preventDefault();
+  const err = document.getElementById('pin-err');
+  const wait = pinAttemptsBlocked();
+  if (wait) { if (err) err.textContent = `Too many attempts — wait ${wait}s`; return; }
+  const pin = (document.getElementById('pin-input') || {}).value || '';
+  if (hasOwnerPin() && pinHash(pin) === db.settings.ownerPinHash) {
+    sessionStorage.removeItem(PIN_ATTEMPT_KEY);
+    unlockOwner();
+    closePinModal();
+    toast('Owner Mode unlocked', 'ok');
+    const cb = pinAfterUnlock; pinAfterUnlock = null;
+    render();
+    if (cb) cb();
+  } else {
+    recordPinAttempt();
+    if (err) err.textContent = 'Incorrect PIN';
+    const inp = document.getElementById('pin-input');
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+function openPinSetup(fromPrompt) {
+  closePinModal();
+  const changing = hasOwnerPin();
+  const modal = document.createElement('div');
+  modal.id = 'pin-modal';
+  modal.className = 'pin-overlay';
+  modal.innerHTML = `
+    <div class="pin-card">
+      <div class="pin-title">${changing ? 'Change Owner PIN' : 'Create Owner PIN'}</div>
+      <div class="pin-sub">${fromPrompt
+        ? 'This update adds Operator Mode: the app now opens restricted — no costs, no editing history. Your PIN unlocks full Owner access.'
+        : changing ? 'Set a new 4–8 digit PIN.' : 'Once set, the app opens in restricted Operator Mode. This PIN unlocks costs, reports and editing.'}</div>
+      <form onsubmit="submitPinSetup(event)">
+        <label class="pin-lbl" for="pin-new">New PIN (4–8 digits)</label>
+        <input id="pin-new" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" autocomplete="new-password" required>
+        <label class="pin-lbl" for="pin-new2">Confirm PIN</label>
+        <input id="pin-new2" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" autocomplete="new-password" required>
+        <div id="pin-err" class="pin-err"></div>
+        <div class="pin-acts">
+          <button type="submit" class="btn btn-pri" style="flex:1">${changing ? 'Change PIN' : 'Set PIN'}</button>
+          <button type="button" class="btn btn-ghost" style="flex:1" onclick="${fromPrompt ? 'dismissPinSetup()' : 'closePinModal()'}">${fromPrompt ? 'Not Now' : 'Cancel'}</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(() => { const i = document.getElementById('pin-new'); if (i) i.focus(); }, 60);
+}
+
+function submitPinSetup(e) {
+  e.preventDefault();
+  const p1 = (document.getElementById('pin-new') || {}).value || '';
+  const p2 = (document.getElementById('pin-new2') || {}).value || '';
+  const err = document.getElementById('pin-err');
+  if (!/^\d{4,8}$/.test(p1)) { if (err) err.textContent = 'PIN must be 4–8 digits'; return; }
+  if (p1 !== p2) { if (err) err.textContent = 'PINs do not match'; return; }
+  db.settings.ownerPinHash = pinHash(p1);
+  db.settings.pinPromptShown = true;
+  saveDB();
+  unlockOwner(); // whoever sets the PIN is the owner — stay unlocked this session
+  closePinModal();
+  toast('Owner PIN set', 'ok');
+  render();
+}
+
+function dismissPinSetup() {
+  db.settings.pinPromptShown = true;
+  saveDB();
+  closePinModal();
+  toast('You can set the PIN later in Settings');
+}
+
+function syncModeChip() {
+  const el = document.getElementById('mode-chip');
+  if (!el) return;
+  if (!hasOwnerPin() || ui.view === 'setup') { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const owner = isOwner();
+  el.className = 'mode-chip ' + (owner ? 'owner' : 'operator');
+  el.textContent = owner ? 'OWNER MODE' : 'OPERATOR';
+  el.title = owner ? 'Tap to lock into Operator Mode' : 'Tap to unlock Owner Mode';
+}
+
+function modeChipClick() {
+  if (!hasOwnerPin()) return;
+  if (isOwner()) lockOwner();
+  else openPinDialog();
+}
+
+function vOperatorLocked(licenseIssue) {
+  setTabs(`<button class="tab" onclick="navigate('jobs')">&#8592; Jobs</button>`);
+  setBarCrumb('', false);
+  return `
+    <div style="max-width:380px;margin:4rem auto;text-align:center;padding:0 1rem">
+      <div style="font-size:1.6rem;margin-bottom:.6rem">&#128274;</div>
+      <div style="font-weight:800;color:var(--navy);margin-bottom:.4rem">${licenseIssue ? 'License needs attention' : 'Owner access required'}</div>
+      <div style="font-size:.78rem;color:var(--mut);margin-bottom:1.2rem;line-height:1.5">${licenseIssue
+        ? 'The subscription for this app needs to be renewed. Please ask the owner to unlock and handle it.'
+        : 'This section is only available in Owner Mode.'}</div>
+      <button class="btn btn-pri" onclick="openPinDialog()">Unlock Owner Mode</button>
+    </div>`;
 }
 
 // ── calculations ─────────────────────────────────────────────────
@@ -1223,6 +1533,10 @@ const ui = {
 };
 
 function navigate(view, params = {}) {
+  if (OWNER_VIEWS.includes(view) && !isOwner()) {
+    openPinDialog(() => navigate(view, params));
+    return;
+  }
   ui.view = view;
   ui.jobId = params.jobId || null;
   ui.stationId = params.stationId || null;
@@ -1273,7 +1587,7 @@ function stationTile(st, jobId) {
   else if (sc.lifeStatus === 'warn') tierClass = 'warn-st';
 
   const cpcVal = sc.confirmedCpc != null ? sc.confirmedCpc : sc.provisionalCpc;
-  const cpcHtml = cpcVal != null
+  const cpcHtml = isOwner() && cpcVal != null
     ? `<div class="st-cpc">${fmtRs(cpcVal, 2)}<span class="st-cpc-unit">/pc</span>${sc.confirmedCpc == null ? '<span class="st-cpc-prov"> est.</span>' : ''}</div>`
     : '';
 
@@ -1327,30 +1641,33 @@ function stationTile(st, jobId) {
 // ── views ─────────────────────────────────────────────────────────
 
 function vJobs() {
-  const filter = ui.tab;
+  const owner = isOwner();
+  const filter = (ui.tab === 'cpc' && !owner) ? 'active' : ui.tab;
 
   const tabs = [
     ['active', 'Active'],
     ['paused', 'Paused'],
     ['complete', 'Complete'],
     ['all', 'All'],
-    ['cpc', 'CPC Compare'],
   ];
+  if (owner) tabs.push(['cpc', 'CPC Compare']);
   const tabHtml = tabs.map(([key, lbl]) => {
     const count = key === 'cpc' ? null : key === 'all' ? db.jobs.length : db.jobs.filter(j => (j.status||'active') === key).length;
-    const sel = ui.tab === key ? 'aria-selected="true"' : '';
+    const sel = filter === key ? 'aria-selected="true"' : '';
     return `<button class="tab" ${sel} onclick="setJobFilter('${key}')">${lbl}${count ? `<span class="n">${count}</span>` : ''}</button>`;
   }).join('');
-  setTabs(tabHtml + `<button class="tab" onclick="navigate('inventory')">Inventory</button><button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>`);
+  setTabs(tabHtml + (owner
+    ? `<button class="tab" onclick="navigate('inventory')">Inventory</button><button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>`
+    : ''));
   setBarCrumb('', false);
 
   const hd = `
     <div class="jobs-hd">
       <h2>Component Jobs</h2>
-      <div style="display:flex;gap:.45rem;flex-wrap:wrap">
+      ${owner ? `<div style="display:flex;gap:.45rem;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="exportToExcel()" title="Export all data to Excel">&#8595; Excel</button>
         <button class="btn btn-pri" onclick="navigate('newjob')">+ New Job</button>
-      </div>
+      </div>` : ''}
     </div>`;
 
   if (filter === 'cpc') {
@@ -1375,7 +1692,7 @@ function vJobs() {
   } else {
     listHtml = jobs.map(j => {
       const jc = calcJob(j);
-      const stations = j.stations || [];
+      const stations = jobAllStations(j);
       const healthDots = stations.map(st => {
         const sc = calcStation(st);
         let cls = '';
@@ -1401,7 +1718,7 @@ function vJobs() {
                 <div class="jc-stat-n">${fmtN(jc.totalProduced)}</div>
                 <div class="jc-stat-l">pcs made total</div>
               </div>
-              ${jc.totalCpc != null ? `<div>
+              ${owner && jc.totalCpc != null ? `<div>
                 <div class="jc-stat-n cpc">${fmtRs(jc.totalCpc, 2)}</div>
                 <div class="jc-stat-l">per piece (insert)</div>
               </div>` : ''}
@@ -1433,7 +1750,7 @@ function vJobs() {
           <div>
             <div class="job-count">${fmtN(jc.totalProduced)}</div>
             <div class="job-count-lbl">pcs made</div>
-            ${jc.totalCpc ? `<div style="font-family:var(--mono);font-size:.72rem;color:var(--teal);text-align:right;margin-top:.2rem;font-weight:700">${fmtRs(jc.totalCpc,2)}/pc</div>` : ''}
+            ${owner && jc.totalCpc ? `<div style="font-family:var(--mono);font-size:.72rem;color:var(--teal);text-align:right;margin-top:.2rem;font-weight:700">${fmtRs(jc.totalCpc,2)}/pc</div>` : ''}
           </div>
         </div>`;
     }).join('');
@@ -1445,7 +1762,7 @@ function vJobs() {
 function vCPCContent() {
   const rows = [];
   (db.jobs || []).forEach(j => {
-    (j.stations || []).forEach(st => {
+    jobAllStations(j).forEach(st => {
       const sc = calcStation(st);
       if (!sc.sets.length) return;
       rows.push({
@@ -1572,7 +1889,7 @@ function buildOpsPipeline(job, ops) {
   return `
     <div class="ops-pipeline">
       <div class="ops-steps">${steps}</div>
-      <button class="btn-icon-sm" onclick="addOperation('${job.id}')" title="Add operation" style="margin-left:.5rem;align-self:center">+ Op</button>
+      ${isOwner() ? `<button class="btn-icon-sm" onclick="addOperation('${job.id}')" title="Add operation" style="margin-left:.5rem;align-self:center">+ Op</button>` : ''}
     </div>`;
 }
 
@@ -1584,6 +1901,7 @@ function setActiveOp(jobId, opId) {
 }
 
 function addOperation(jobId) {
+  if (!requireOwner()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const n = (job.operations || []).length + 1;
@@ -1610,11 +1928,12 @@ function vJobDetail() {
   const stations = activeOp ? (activeOp.stations || []) : [];
   const log = (job.productionLog || []).slice().reverse();
 
+  const owner = isOwner();
   const tabHtml = `
     <button class="tab" onclick="navigate('jobs')">&#8592; Jobs</button>
     <button class="tab" aria-selected="true">${esc(job.componentCode)}</button>
-    <button class="tab" onclick="navigate('report',{jobId:'${job.id}'})">Report</button>
-    <button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>
+    ${owner ? `<button class="tab" onclick="navigate('report',{jobId:'${job.id}'})">Report</button>
+    <button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>` : ''}
   `;
   setTabs(tabHtml);
   setBarCrumb(job.componentCode, true);
@@ -1624,11 +1943,11 @@ function vJobDetail() {
   const opsPipeline = buildOpsPipeline(job, ops);
 
   const stationTiles = stations.map(st => stationTile(st, job.id)).join('');
-  const addTile = `
+  const addTile = owner ? `
     <button class="add-tile" onclick="toggleAddStation()" title="Add tooling station">
       <span class="plus">+</span>
       <span>Add Station</span>
-    </button>`;
+    </button>` : '';
 
   const statusOptions = ['active','paused','complete'].map(s =>
     `<option value="${s}"${(job.status||'active')===s?' selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`
@@ -1654,7 +1973,7 @@ function vJobDetail() {
           <td class="qty-cell">${fmtN(entry.qty)}</td>
           <td class="mono">${entry.cycleTimeMins > 0 ? fmtN(entry.cycleTimeMins,1)+' min' : '—'}</td>
           <td><div class="ev-chips">${evChips || '—'}</div></td>
-          <td><button class="btn-icon-sm" onclick="openLogEdit('${job.id}','${entry.id}')" title="Edit entry">&#9998;</button></td>
+          ${owner ? `<td><button class="btn-icon-sm" onclick="openLogEdit('${job.id}','${entry.id}')" title="Edit entry">&#9998;</button></td>` : ''}
         </tr>`;
     }).join('');
 
@@ -1662,7 +1981,7 @@ function vJobDetail() {
       <div class="log-tbl-wrap">
         <table class="log-tbl">
           <thead><tr>
-            <th>Date / Time</th><th>Operator</th><th>Machine</th><th>Qty</th><th>Cycle</th><th>Events</th><th></th>
+            <th>Date / Time</th><th>Operator</th><th>Machine</th><th>Qty</th><th>Cycle</th><th>Events</th>${owner ? '<th></th>' : ''}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1685,19 +2004,21 @@ function vJobDetail() {
           <div class="hero-meta">
             Started ${fmtDate(job.createdAt)}
             ${jc.lastEntry ? ' &middot; Last run ' + fmtDate(jc.lastEntry.timestamp) : ''}
-            &middot; <select style="background:none;border:0;color:rgba(255,255,255,.45);font-size:.62rem;padding:0;cursor:pointer"
-              onchange="setJobStatus('${job.id}',this.value)">${statusOptions}</select>
+            &middot; ${owner
+              ? `<select style="background:none;border:0;color:rgba(255,255,255,.45);font-size:.62rem;padding:0;cursor:pointer"
+                onchange="setJobStatus('${job.id}',this.value)">${statusOptions}</select>`
+              : `<span style="text-transform:capitalize">${esc(job.status || 'active')}</span>`}
           </div>
         </div>
         <div class="hero-count-wrap">
           <div class="hero-num">${fmtN(jc.totalProduced)}</div>
           <div class="hero-num-lbl">Pcs Made</div>
-          ${jc.totalCpc != null ? `<div class="hero-cpc">${fmtRs(jc.totalCpc,2)}/pc insert cost</div>` : ''}
+          ${owner && jc.totalCpc != null ? `<div class="hero-cpc">${fmtRs(jc.totalCpc,2)}/pc insert cost</div>` : ''}
         </div>
       </div>
       <div class="hero-acts">
         <button class="btn btn-teal btn-lg" onclick="toggleLogForm()">${ui.logOpen ? '&#10005; Close' : '+ Log Production'}</button>
-        <button class="btn btn-ghost" onclick="navigate('report',{jobId:'${job.id}'})">Owner Report</button>
+        ${owner ? `<button class="btn btn-ghost" onclick="navigate('report',{jobId:'${job.id}'})">Owner Report</button>` : ''}
       </div>
     </div>
 
@@ -1723,8 +2044,9 @@ function vJobDetail() {
       ${stations.length === 0 && !ui.addStationOpen ? `
         <div style="padding:1.5rem 1.2rem;text-align:center">
           <div style="font-size:.82rem;font-weight:700;color:var(--navy);margin-bottom:.3rem">No tooling stations for ${activeOp ? esc(activeOp.name) : 'this op'}</div>
-          <div style="font-size:.72rem;color:var(--mut);margin-bottom:1rem;max-width:340px;margin-left:auto;margin-right:auto">Add one station per cutting tool — e.g. OD Turning, M8 Tapping, Face Milling. CPC tracks automatically once you start logging.</div>
-          <button class="btn btn-pri" onclick="toggleAddStation()">+ Add First Station</button>
+          ${owner ? `<div style="font-size:.72rem;color:var(--mut);margin-bottom:1rem;max-width:340px;margin-left:auto;margin-right:auto">Add one station per cutting tool — e.g. OD Turning, M8 Tapping, Face Milling. CPC tracks automatically once you start logging.</div>
+          <button class="btn btn-pri" onclick="toggleAddStation()">+ Add First Station</button>`
+          : `<div style="font-size:.72rem;color:var(--mut)">Stations are set up by the owner.</div>`}
         </div>` : `
       <div class="station-scroll">
         ${stationTiles}
@@ -1736,21 +2058,21 @@ function vJobDetail() {
 
     <div class="panel" style="margin-bottom:.5rem">
       <div class="stat-strip">
-        <div class="s-stat">
+        ${owner ? `<div class="s-stat">
           <div class="lbl">Insert CPC</div>
           <div>${cpcHtml}</div>
           <div class="s-sub">Tooling cost per piece</div>
-        </div>
+        </div>` : ''}
         <div class="s-stat">
           <div class="lbl">Avg Corner Life</div>
           <div>${cornerLifeHtml}</div>
           <div class="s-sub">Pcs per insert corner</div>
         </div>
-        <div class="s-stat">
+        ${owner ? `<div class="s-stat">
           <div class="lbl">Insert Spend</div>
           <div><span class="s-val">${fmtRs(jc.totalInsertCost,0)}</span></div>
           <div class="s-sub">Total committed</div>
-        </div>
+        </div>` : ''}
         <div class="s-stat">
           <div class="lbl">Anomalies</div>
           <div><span class="s-val ${jc.totalAnomalies ? 'bad-c' : ''}">${fmtN(jc.totalAnomalies)}</span></div>
@@ -2150,7 +2472,7 @@ function vStationDetail() {
             <span class="set-badge ${badgeClass}">SET #${si}</span>
             <div class="pip-row" style="margin:0 .5rem 0 .3rem">${pip}</div>
             <span class="small muted">${fmtDate(set.loadedAt)}${set.loadedBy ? ' · ' + esc(set.loadedBy) : ''}</span>
-            <span class="small mono" style="margin-left:auto">${fmtN(totalPcs)} pcs &middot; ${fmtRs(cpc,2)}/pc</span>
+            <span class="small mono" style="margin-left:auto">${fmtN(totalPcs)} pcs${isOwner() ? ` &middot; ${fmtRs(cpc,2)}/pc` : ''}</span>
           </div>
           <table class="corner-tbl">
             <thead><tr>
@@ -2225,10 +2547,10 @@ function vStationDetail() {
           }
           return s;
         })()}</span>
-        <button class="btn btn-ghost" style="margin-left:auto;font-size:.6rem;min-height:26px;padding:.18rem .55rem" onclick="toggleEditStation()">${ui.editStationOpen ? 'Cancel' : 'Edit'}</button>
+        ${isOwner() ? `<button class="btn btn-ghost" style="margin-left:auto;font-size:.6rem;min-height:26px;padding:.18rem .55rem" onclick="toggleEditStation()">${ui.editStationOpen ? 'Cancel' : 'Edit'}</button>` : ''}
       </div>
       <div class="stat-strip">
-        <div class="s-stat">
+        ${isOwner() ? `<div class="s-stat">
           <div class="lbl">Confirmed CPC</div>
           <div>${cpcConfirmed}</div>
           <div class="s-sub">Fully spent sets only</div>
@@ -2237,7 +2559,7 @@ function vStationDetail() {
           <div class="lbl">Running CPC</div>
           <div>${cpcProv}</div>
           <div class="s-sub">${solid ? 'Cost per piece so far' : 'Proportional — excludes unused corners'}</div>
-        </div>
+        </div>` : ''}
         <div class="s-stat">
           <div class="lbl">Total Pcs</div>
           <div><span class="s-val">${fmtN(sc.totalComponents)}</span></div>
@@ -2254,7 +2576,9 @@ function vStationDetail() {
       <div class="panel-hd">
         <span class="lbl">${solid ? 'Tool Lifecycle' : 'Insert Lifecycle'}</span>
         <div class="hr"></div>
-        <span class="small muted">${solid ? `${fmtRs(sc.setCost,0)}/tool` : `${sc.insertsInCutter} insert${sc.insertsInCutter>1?'s':''} · ${sc.totalCorners} corner${sc.totalCorners>1?'s':''} per set · ${fmtRs(sc.setCost,0)}/set`}</span>
+        <span class="small muted">${isOwner()
+          ? (solid ? `${fmtRs(sc.setCost,0)}/tool` : `${sc.insertsInCutter} insert${sc.insertsInCutter>1?'s':''} · ${sc.totalCorners} corner${sc.totalCorners>1?'s':''} per set · ${fmtRs(sc.setCost,0)}/set`)
+          : (solid ? '' : `${sc.insertsInCutter} insert${sc.insertsInCutter>1?'s':''} · ${sc.totalCorners} corner${sc.totalCorners>1?'s':''} per set`)}</span>
         <div style="margin-left:auto">
           ${sc.activeSet
             ? `<button class="btn btn-ghost" style="font-size:.56rem;min-height:28px;padding:.2rem .6rem" onclick="loadNewSet('${job.id}','${st.id}')">${solid ? 'Replace Tool' : 'Replace Inserts'}</button>`
@@ -2263,10 +2587,10 @@ function vStationDetail() {
       </div>
       <div style="padding:.85rem 1rem .75rem">${setsHtml}</div>
     </div>
-    ${ui.editStationOpen ? `<div class="panel" style="margin:.8rem 0">${buildEditStationForm(job, st)}</div>` : ''}
-    <div style="display:flex;gap:.55rem;flex-wrap:wrap;margin-top:.5rem">
+    ${ui.editStationOpen && isOwner() ? `<div class="panel" style="margin:.8rem 0">${buildEditStationForm(job, st)}</div>` : ''}
+    ${isOwner() ? `<div style="display:flex;gap:.55rem;flex-wrap:wrap;margin-top:.5rem">
       <button class="btn btn-bad" onclick="confirmDeleteStation('${job.id}','${st.id}')">Delete Station</button>
-    </div>`;
+    </div>` : ''}`;
 }
 
 function vReport() {
@@ -2499,6 +2823,17 @@ function vSetup() {
               <label for="setup-email">Email <span class="setup-email-note">(for license activation)</span></label>
               <input id="setup-email" type="email" placeholder="e.g. workshop@example.com" autocomplete="email">
             </div>
+            <div class="setup-pin-row">
+              <div class="field">
+                <label for="setup-pin">Owner PIN <span class="req">*</span></label>
+                <input id="setup-pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" placeholder="4&#8211;8 digits" required autocomplete="new-password">
+              </div>
+              <div class="field">
+                <label for="setup-pin2">Confirm PIN <span class="req">*</span></label>
+                <input id="setup-pin2" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" placeholder="Repeat" required autocomplete="new-password">
+              </div>
+            </div>
+            <div class="setup-pin-note">The app opens in restricted Operator Mode for the shop floor. Your PIN unlocks costs, reports and editing.</div>
             <button type="submit" class="btn btn-pri btn-lg setup-submit">Start Tracking &#8594;</button>
           </form>
         </div>
@@ -2647,6 +2982,7 @@ function buildInvPasteImport() {
 
 function submitAddInventory(e) {
   e.preventDefault();
+  if (!requireOwner()) return;
   const desig = ($('#inv-desig') || {}).value.trim();
   if (!desig) return;
   const item = {
@@ -2666,6 +3002,7 @@ function submitAddInventory(e) {
 }
 
 function deleteInventoryItem(id) {
+  if (!requireOwner()) return;
   if (!confirm('Remove this item from inventory?')) return;
   db.inventory = db.inventory.filter(i => i.id !== id);
   saveDB();
@@ -2674,6 +3011,7 @@ function deleteInventoryItem(id) {
 }
 
 function importInvPaste() {
+  if (!requireOwner()) return;
   const raw = ($('#inv-paste') || {}).value || '';
   if (!raw.trim()) { toast('Nothing to import', 'bad'); return; }
   const lines = raw.trim().split('\n').map(l => l.split('\t'));
@@ -2754,6 +3092,15 @@ function vSettings() {
       </div>
     </div>
     <div class="panel">
+      <div class="panel-hd"><span class="lbl">Owner PIN</span><div class="hr"></div></div>
+      <div class="panel-bd">
+        <div style="font-size:.75rem;color:var(--mut);margin-bottom:.65rem;line-height:1.55">${hasOwnerPin()
+          ? 'PIN is set. The app opens in Operator Mode — costs, reports, settings and history editing need this PIN. Owner Mode locks automatically after 15 minutes of inactivity.'
+          : 'No PIN set — the app currently opens with full access. Set a PIN to enable restricted Operator Mode for the shop floor.'}</div>
+        <button class="btn btn-ghost" onclick="openPinSetup()">${hasOwnerPin() ? 'Change Owner PIN' : 'Set Owner PIN'}</button>
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-hd"><span class="lbl">Data Export</span><div class="hr"></div></div>
       <div class="panel-bd">
         <div style="display:flex;gap:.7rem;flex-wrap:wrap;margin-bottom:.65rem">
@@ -2818,6 +3165,7 @@ function render() {
       : (licStatus === 'expired' || ui.view === 'paywall');
 
     if (ui.view === 'setup')       html = vSetup();
+    else if (!isOwner() && (showPaywall || OWNER_VIEWS.includes(ui.view))) html = vOperatorLocked(showPaywall);
     else if (showPaywall)          html = vPaywall();
     else if (ui.view === 'jobs')   html = vJobs();
     else if (ui.view === 'newjob') html = vNewJob();
@@ -2832,13 +3180,19 @@ function render() {
     html = `<div style="padding:2rem;color:var(--bad)">Render error: ${esc(e.message)}<br><pre style="font-size:.7rem;margin-top:.5rem">${esc(e.stack)}</pre></div>`;
   }
   view.innerHTML = html;
+  syncModeChip();
+  // One-time migration prompt: existing installs get asked to create their PIN
+  if (ui.view !== 'setup' && db.settings.company && !hasOwnerPin()
+      && !db.settings.pinPromptShown && !document.getElementById('pin-modal')) {
+    setTimeout(() => openPinSetup(true), 400);
+  }
   setTimeout(buildDataLists, 0);
 }
 
 // ── event handlers ─────────────────────────────────────────────────
-function setJobFilter(f) { ui.tab = f; render(); }
+function setJobFilter(f) { if (f === 'cpc' && !requireOwner()) return; ui.tab = f; render(); }
 function toggleLogForm()    { ui.logOpen = !ui.logOpen; render(); }
-function toggleAddStation() { ui.addStationOpen = !ui.addStationOpen; render(); }
+function toggleAddStation() { if (!requireOwner()) return; ui.addStationOpen = !ui.addStationOpen; render(); }
 
 function adjQty(n) {
   const inp = $('#lp-qty');
@@ -2846,6 +3200,7 @@ function adjQty(n) {
 }
 
 function setJobStatus(jobId, status) {
+  if (!requireOwner()) { render(); return; }
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   job.status = status;
@@ -2855,6 +3210,7 @@ function setJobStatus(jobId, status) {
 
 function submitNewJob(e) {
   e.preventDefault();
+  if (!requireOwner()) return;
   const code = $('#nj-code').value.trim();
   if (!code) { toast('Component code is required', 'bad'); return; }
   const job = {
@@ -2913,6 +3269,7 @@ function readStationFields(opType) {
 
 function submitAddStation(e, jobId) {
   e.preventDefault();
+  if (!requireOwner()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const name = (g => g ? g.value.trim() : '')($('#sf-name'));
@@ -2949,6 +3306,7 @@ function submitAddStation(e, jobId) {
 
 function submitEditStation(e, jobId, stationId) {
   e.preventDefault();
+  if (!requireOwner()) return;
   const job = db.jobs.find(j => j.id === jobId);
   const st = job && jobAllStations(job).find(s => s.id === stationId);
   if (!st) return;
@@ -2966,7 +3324,7 @@ function submitEditStation(e, jobId, stationId) {
   render();
 }
 
-function toggleEditStation() { ui.editStationOpen = !ui.editStationOpen; render(); }
+function toggleEditStation() { if (!requireOwner()) return; ui.editStationOpen = !ui.editStationOpen; render(); }
 
 function submitLogProduction(e, jobId) {
   e.preventDefault();
@@ -3024,6 +3382,7 @@ function submitLogProduction(e, jobId) {
 }
 
 function openLogEdit(jobId, entryId) {
+  if (!requireOwner()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const entry = (job.productionLog || []).find(e => e.id === entryId);
@@ -3074,6 +3433,7 @@ function openLogEdit(jobId, entryId) {
 
 function saveLogEdit(e, jobId, entryId) {
   e.preventDefault();
+  if (!requireOwner()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const entry = (job.productionLog || []).find(en => en.id === entryId);
@@ -3183,6 +3543,7 @@ function loadNewSet(jobId, stationId) {
 }
 
 function confirmDeleteStation(jobId, stationId) {
+  if (!requireOwner()) return;
   if (!confirm('Delete this tooling station and all its insert history? This cannot be undone.')) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
@@ -3196,10 +3557,17 @@ function submitSetup(e) {
   e.preventDefault();
   const co = $('#setup-co').value.trim();
   if (!co) return;
+  const pin1 = (($('#setup-pin') || {}).value || '').trim();
+  const pin2 = (($('#setup-pin2') || {}).value || '').trim();
+  if (!/^\d{4,8}$/.test(pin1)) { toast('Owner PIN must be 4–8 digits', 'bad'); return; }
+  if (pin1 !== pin2) { toast('PINs do not match', 'bad'); return; }
   db.settings.company = co;
   db.settings.defaultOperator = $('#setup-op').value.trim();
   db.settings.defaultMachine = $('#setup-mc').value.trim();
   db.settings.email = (($('#setup-email') || {}).value || '').trim().toLowerCase();
+  db.settings.ownerPinHash = pinHash(pin1);
+  db.settings.pinPromptShown = true;
+  unlockOwner(); // person completing setup is the owner — stay unlocked this session
   if (!db.settings.trialStartedAt) db.settings.trialStartedAt = new Date().toISOString();
   addHistory('operators', db.settings.defaultOperator);
   addHistory('machines', db.settings.defaultMachine);
@@ -3209,6 +3577,7 @@ function submitSetup(e) {
 
 function submitSettings(e) {
   e.preventDefault();
+  if (!requireOwner()) return;
   db.settings.company = $('#st-co').value.trim();
   db.settings.defaultOperator = $('#st-op').value.trim();
   db.settings.defaultMachine = $('#st-mach').value.trim();
@@ -3219,6 +3588,7 @@ function submitSettings(e) {
 }
 
 function printReport() {
+  if (!requireOwner()) return;
   const rptEl = $('#report-inner');
   if (!rptEl) return;
   $('#print-area').innerHTML = rptEl.outerHTML;
@@ -3226,6 +3596,7 @@ function printReport() {
 }
 
 function exportData() {
+  if (!requireOwner()) return;
   const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -3234,6 +3605,7 @@ function exportData() {
 }
 
 function exportToExcel() {
+  if (!requireOwner()) return;
   // SpreadsheetML — no library, works offline, opens in Excel & LibreOffice
   const xe = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const sc = (v, t='String') => `<Cell><Data ss:Type="${t}">${xe(v)}</Data></Cell>`;
@@ -3339,6 +3711,7 @@ function exportToExcel() {
 }
 
 function importData() {
+  if (!requireOwner()) return;
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.json';
   inp.onchange = e => {
@@ -3377,6 +3750,7 @@ function quickLog(jobId) {
 }
 
 function confirmClearAll() {
+  if (!requireOwner()) return;
   if (!confirm('Delete ALL jobs and history? This cannot be undone.')) return;
   db = blankDB();
   saveDB();
@@ -3436,6 +3810,7 @@ function verifyLicenseIfNeeded() {
 
 // ── license activation ────────────────────────────────────────────
 async function activateLicense() {
+  if (!requireOwner()) return;
   const emailEl = $('#pw-email');
   const email = ((emailEl || {}).value || '').trim().toLowerCase();
   if (!email) { toast('Enter your email address', 'bad'); return; }
@@ -3481,12 +3856,24 @@ Object.assign(window, {
   submitEditStation, toggleEditStation, activateLicense,
   setActiveOp, addOperation,
   submitAddInventory, deleteInventoryItem, importInvPaste,
+  modeChipClick, openPinDialog, openPinSetup, closePinModal,
+  submitPinUnlock, submitPinSetup, dismissPinSetup, openLogEdit, saveLogEdit,
 });
 
 // ── init ──────────────────────────────────────────────────────────
 loadDB();
 if (!db.settings.company) ui.view = 'setup';
 render();
+
+// Owner-mode auto-lock: any interaction refreshes the 15-min window;
+// a background check locks the UI once it lapses.
+['click', 'keydown', 'touchstart'].forEach(ev =>
+  document.addEventListener(ev, touchOwnerActivity, { passive: true }));
+setInterval(() => {
+  if (!hasOwnerPin()) return;
+  const s = ownerSession();
+  if (s && s.la && Date.now() - s.la > OWNER_TIMEOUT_MS) lockOwner();
+}, 30000);
 verifyLicenseIfNeeded(); // background, non-blocking
 updateClock();
 setInterval(updateClock, 30000);
