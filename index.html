@@ -2269,14 +2269,55 @@ function buildLogForm(job) {
 }
 
 // Shared fields for both add and edit forms. ex = existing station (null for add).
+// Which inventory categories fit each tool category
+function invCatsForTool(opType) {
+  const cat = toolCategory(opType);
+  if (cat === 'milling') return ['milling_insert', 'other'];
+  if (cat === 'solid')   return ['drill', 'endmill', 'other'];
+  return ['turning_insert', 'other'];
+}
+
+// Optional "pick from inventory" select — renders nothing when the
+// inventory has no matching items, so unlinked workflows are untouched.
+function invPickerHtml(opType, ex) {
+  const cats = invCatsForTool(opType);
+  const items = (db.inventory || []).filter(i => cats.includes(i.category));
+  const selectedId = (ex && ex.inventoryItemId) || '';
+  if (!items.length) return `<input type="hidden" id="sf-inv" value="${esc(selectedId)}">`;
+  const opts = items.map(i =>
+    `<option value="${i.id}"${i.id === selectedId ? ' selected' : ''}>${esc(i.designation)}${i.grade ? ' · ' + esc(i.grade) : ''} (${i.qtyInStock || 0} in stock)</option>`
+  ).join('');
+  return `
+    <div class="field" style="grid-column:1/-1">
+      <label for="sf-inv">Pick from Inventory</label>
+      <select id="sf-inv" onchange="pickInventoryItem(this)">
+        <option value="">— not linked —</option>
+        ${opts}
+      </select>
+      <div class="hint">Linking auto-fills the fields below and deducts stock on every load.</div>
+    </div>`;
+}
+
+function pickInventoryItem(sel) {
+  const item = (db.inventory || []).find(i => i.id === sel.value);
+  if (!item) return;
+  const desigEl = $('#sf-insert') || $('#sf-tool-spec');
+  if (desigEl) desigEl.value = [item.manufacturer, item.grade, item.designation].filter(Boolean).join(' ');
+  const costEl = $('#sf-cost');
+  if (costEl && item.unitPrice > 0) costEl.value = item.unitPrice;
+  updateSetCostHint();
+}
+
 function buildStationFields(opType, ex) {
   const cat = toolCategory(opType);
   const fv = (field, def) => (ex != null && ex[field] != null) ? ex[field] : def;
   const inp = (field, def) => `value="${esc(String(fv(field, def)))}"`;
+  const invPicker = invPickerHtml(opType, ex);
 
   if (cat === 'solid') {
     const isTap = opType === 'tapping';
     return `
+      ${invPicker}
       <div class="field" style="grid-column:1/-1">
         <label for="sf-tool-spec">${isTap ? 'Tap Size' : 'Drill Diameter / Spec'}</label>
         <input id="sf-tool-spec" autocomplete="off"
@@ -2296,6 +2337,7 @@ function buildStationFields(opType, ex) {
     const cPer = fv('insertCostPer', 0);
     const hint = (nIns && cPer) ? `${nIns} inserts \xd7 ₹${cPer} = ₹${(nIns * cPer).toFixed(2)} per full set` : 'Qty \xd7 this price = full set replacement cost';
     return `
+      ${invPicker}
       <div class="field">
         <label for="sf-diam">Cutter Diameter (mm)</label>
         <input id="sf-diam" type="number" min="1" step="0.1" placeholder="e.g. 80" ${inp('cutterDiameter','')}>
@@ -2326,6 +2368,7 @@ function buildStationFields(opType, ex) {
 
   // Turning-like: turning, boring, threading, grooving, reaming, other
   return `
+    ${invPicker}
     <div class="field" style="grid-column:1/-1">
       <label for="sf-insert">Insert (Brand \xb7 Grade \xb7 Geometry)</label>
       <input id="sf-insert" list="dl-desigs" autocomplete="off" placeholder="e.g. TOOLFLUX TF425P CNMG120408" ${inp('insertDesig','')}>
@@ -2587,6 +2630,13 @@ function vStationDetail() {
           } else {
             if (st.insertDesig) s += ` \xb7 ${esc(st.insertDesig)}`;
             if (st.toolHolder) s += ` \xb7 ${esc(st.toolHolder)}`;
+          }
+          if (st.inventoryItemId) {
+            const invItem = (db.inventory || []).find(i => i.id === st.inventoryItemId);
+            if (invItem) {
+              const n = invItem.qtyInStock || 0;
+              s += ` \xb7 <span style="${n <= stationLoadNeed(st) ? 'color:var(--bad);font-weight:700' : 'color:var(--teal);font-weight:600'}">${n} in stock</span>`;
+            }
           }
           return s;
         })()}</span>
@@ -3282,12 +3332,14 @@ function submitNewJob(e) {
 function readStationFields(opType) {
   const cat = toolCategory(opType);
   const g = id => (($('#' + id) || {}).value || '');
+  const invId = g('sf-inv') || null;
   if (cat === 'solid') {
     return {
       insertDesig: g('sf-tool-spec').trim(),
       insertsInCutter: 1, cuttingCornersPerInsert: 1,
       insertCostPer: parseFloat(g('sf-cost')) || 0,
       toolHolder: '', cutterDiameter: null,
+      inventoryItemId: invId,
     };
   }
   if (cat === 'milling') {
@@ -3298,6 +3350,7 @@ function readStationFields(opType) {
       cuttingCornersPerInsert: parseInt(g('sf-corners')) || 4,
       insertCostPer: parseFloat(g('sf-cost')) || 0,
       toolHolder: '',
+      inventoryItemId: invId,
     };
   }
   return {
@@ -3307,6 +3360,7 @@ function readStationFields(opType) {
     cuttingCornersPerInsert: parseInt(g('sf-corners')) || 4,
     insertCostPer: parseFloat(g('sf-cost')) || 0,
     cutterDiameter: null,
+    inventoryItemId: invId,
   };
 }
 
@@ -3523,6 +3577,30 @@ function saveLogEdit(e, jobId, entryId) {
   render();
 }
 
+// Deduct stock for a linked station when a set/tool is loaded.
+// interactive=true → confirm() gate on insufficient stock (explicit load buttons);
+// interactive=false → deduct + warn toast only (mid-log event processing).
+// Unlinked stations and deleted inventory items pass through untouched.
+function consumeInventory(st, need, interactive) {
+  if (!st.inventoryItemId) return true;
+  const item = (db.inventory || []).find(i => i.id === st.inventoryItemId);
+  if (!item) return true;
+  const have = item.qtyInStock || 0;
+  if (have < need) {
+    if (interactive) {
+      if (!confirm(`Stock warning: only ${have} × ${item.designation} in inventory, this load needs ${need}. Load anyway?`)) return false;
+    } else {
+      toast(`Inventory low: ${item.designation} — needed ${need}, had ${have}`, 'warn');
+    }
+  }
+  item.qtyInStock = Math.max(0, have - need);
+  return true;
+}
+
+function stationLoadNeed(st) {
+  return isSolidTool(st.opType) ? 1 : Math.max(1, Number(st.insertsInCutter) || 1);
+}
+
 function processStationEvent(st, ev) {
   const activeSet = (st.insertSets || []).find(s => s.status === 'active');
   if (!activeSet) return;
@@ -3544,6 +3622,7 @@ function processStationEvent(st, ev) {
     ac.status = ev.eventType === 'insert_replace_broken' ? 'broken' : 'indexed';
     ac.endedAt = ts;
     activeSet.status = ev.eventType === 'insert_replace_broken' ? 'broken' : 'spent';
+    consumeInventory(st, stationLoadNeed(st), false);
     st.insertSets.push({
       id: uid(), loadedAt: ts, loadedBy: ev.loadedBy || '', status: 'active',
       corners: [{ num: 1, startedAt: ts, endedAt: null, componentsMade: 0, status: 'active' }],
@@ -3557,6 +3636,7 @@ function loadFirstSet(jobId, stationId) {
   if (!st) return;
   const solid = isSolidTool(st.opType);
   if ((st.insertSets||[]).find(s => s.status === 'active')) { toast(solid ? 'A tool is already loaded' : 'A set is already active', 'bad'); return; }
+  if (!consumeInventory(st, stationLoadNeed(st), true)) return;
   st.insertSets.push({
     id: uid(), loadedAt: isoNow(), loadedBy: db.settings.defaultOperator || '', status: 'active',
     corners: [{ num: 1, startedAt: isoNow(), endedAt: null, componentsMade: 0, status: 'active' }],
@@ -3573,6 +3653,7 @@ function loadNewSet(jobId, stationId) {
   if (!st) return;
   const solid = isSolidTool(st.opType);
   if (!confirm(solid ? 'Replace tool? This will log the current tool as spent.' : 'Load new insert set? This will close the current active set as spent.')) return;
+  if (!consumeInventory(st, stationLoadNeed(st), true)) return;
   const activeSet = (st.insertSets || []).find(s => s.status === 'active');
   if (activeSet) {
     const ac = (activeSet.corners || []).find(c => c.status === 'active');
@@ -3906,6 +3987,7 @@ Object.assign(window, {
   submitAddInventory, deleteInventoryItem, importInvPaste,
   modeChipClick, openPinDialog, openPinSetup, closePinModal,
   submitPinUnlock, submitPinSetup, dismissPinSetup, openLogEdit, saveLogEdit,
+  pickInventoryItem,
 });
 
 // ── init ──────────────────────────────────────────────────────────
