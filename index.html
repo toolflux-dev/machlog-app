@@ -1076,24 +1076,67 @@ function scheduleSyncDebounced() {
   _syncTimer = setTimeout(silentSync, 4000);
 }
 
-function silentSync() {
-  if (!SYNC_URL) return;
+function buildSyncPayload() {
   const cid = db.settings.installId || (db.settings.company || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 30);
-  const payload = JSON.stringify({
+  return JSON.stringify({
     customerId: cid,
     syncedAt: new Date().toISOString(),
     jobs: db.jobs || [],
     settings: { company: db.settings.company, defaultMachine: db.settings.defaultMachine },
   });
+}
+
+// Offline resilience: a pending flag survives browser restarts; retries use
+// exponential backoff. Every push is a full snapshot, so the last successful
+// push always carries every prior operation — no per-op queue needed.
+const SYNC_PENDING_KEY = 'toolflux.machlog.syncPending';
+let _syncRetryTimer = null;
+let _syncBackoffMs = 5000;
+let _lastSyncAttempt = 0;
+
+function markSyncPending()  { try { localStorage.setItem(SYNC_PENDING_KEY, new Date().toISOString()); } catch (e) {} }
+function clearSyncPending() { try { localStorage.removeItem(SYNC_PENDING_KEY); } catch (e) {} }
+function hasSyncPending()   { try { return !!localStorage.getItem(SYNC_PENDING_KEY); } catch (e) { return false; } }
+
+function attemptSync() {
+  if (!SYNC_URL) return;
+  if (Date.now() - _lastSyncAttempt < 2000) {
+    // burst collapse — a snapshot push is already in flight; re-check shortly
+    clearTimeout(_syncRetryTimer);
+    _syncRetryTimer = setTimeout(attemptSync, 2500);
+    return;
+  }
+  _lastSyncAttempt = Date.now();
+  if (navigator.onLine === false) { scheduleSyncRetry(); return; }
   try {
     fetch(SYNC_URL, {
       method: 'POST',
-      body: payload,
+      body: buildSyncPayload(),
       mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain' },
-    }).catch(() => {});
-  } catch(_) {}
+    }).then(() => {
+      clearSyncPending();
+      _syncBackoffMs = 5000;
+    }).catch(() => scheduleSyncRetry());
+  } catch(_) { scheduleSyncRetry(); }
 }
+
+function scheduleSyncRetry() {
+  clearTimeout(_syncRetryTimer);
+  _syncRetryTimer = setTimeout(attemptSync, _syncBackoffMs);
+  _syncBackoffMs = Math.min(_syncBackoffMs * 2, 5 * 60 * 1000);
+}
+
+// Immediate audit sync — call after audit-critical mutations (production log,
+// insert index/replace, edits, deletes). Fire-and-forget, never blocks the UI.
+function syncNow() {
+  if (!SYNC_URL) return;
+  markSyncPending();
+  clearTimeout(_syncTimer); // debounced push would carry the same snapshot
+  attemptSync();
+}
+
+function silentSync() { attemptSync(); } // existing scheduled callers preserved
 
 function addHistory(key, val) {
   if (!val || !String(val).trim()) return;
@@ -3376,6 +3419,7 @@ function submitLogProduction(e, jobId) {
   if (operator) db.settings.defaultOperator = operator;
   if (machine)  db.settings.defaultMachine = machine;
   saveDB();
+  syncNow(); // audit: original numbers reach the sheet before anyone can alter them
   ui.logOpen = false;
   toast(`${qty} pcs logged${rejQty > 0 ? ` (${rejQty} rejected)` : ''}`, rejQty > 0 ? 'warn' : 'ok');
   render();
@@ -3473,6 +3517,7 @@ function saveLogEdit(e, jobId, entryId) {
   entry.notes        = document.getElementById('le-notes').value.trim();
 
   saveDB();
+  syncNow(); // audit: edits reach the sheet immediately
   document.getElementById('log-edit-modal').remove();
   toast('Entry updated', 'ok');
   render();
@@ -3517,6 +3562,7 @@ function loadFirstSet(jobId, stationId) {
     corners: [{ num: 1, startedAt: isoNow(), endedAt: null, componentsMade: 0, status: 'active' }],
   });
   saveDB();
+  syncNow(); // audit: insert load reaches the sheet immediately
   toast(solid ? 'Tool loaded' : 'Insert set loaded', 'ok');
   render();
 }
@@ -3538,6 +3584,7 @@ function loadNewSet(jobId, stationId) {
     corners: [{ num: 1, startedAt: isoNow(), endedAt: null, componentsMade: 0, status: 'active' }],
   });
   saveDB();
+  syncNow(); // audit: insert replacement reaches the sheet immediately
   toast(solid ? 'New tool loaded' : 'New insert set loaded', 'ok');
   render();
 }
@@ -3549,6 +3596,7 @@ function confirmDeleteStation(jobId, stationId) {
   if (!job) return;
   (job.operations || []).forEach(op => { op.stations = (op.stations || []).filter(s => s.id !== stationId); });
   saveDB();
+  syncNow(); // audit: deletion reaches the sheet immediately
   toast('Station deleted');
   navigate('job', { jobId });
 }
@@ -3880,6 +3928,10 @@ setInterval(updateClock, 30000);
 // Sync on load (catches up after offline periods) + every 15 min
 setTimeout(silentSync, 8000);
 setInterval(silentSync, 15 * 60 * 1000);
+// Retry queued audit sync as soon as connectivity returns, or right away
+// if a previous session ended with an unsynced mutation
+window.addEventListener('online', () => { if (hasSyncPending()) attemptSync(); });
+if (hasSyncPending()) setTimeout(attemptSync, 3000);
 
 // Logo fallback for file:// with missing SVG
 (function() {
