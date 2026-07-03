@@ -596,6 +596,52 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .cpc-tbl .cpc-val { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--teal) }
 .cpc-tbl .insert-name { font-family: var(--mono); font-weight: 700; color: var(--navy) }
 
+/* ─── owner dashboard ─── */
+.dash-2col { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .6rem }
+.dash-2col .panel { margin-bottom: 0 }
+@media (max-width: 860px) { .dash-2col { grid-template-columns: 1fr } }
+.att-row {
+  display: flex; align-items: center; gap: .55rem;
+  padding: .48rem 1rem;
+  border-bottom: 1px solid var(--rule2);
+  font-size: .76rem;
+}
+.att-row:last-child { border-bottom: 0 }
+.att-row[role="button"] { cursor: pointer }
+.att-row[role="button"]:hover { background: var(--off) }
+.att-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0 }
+.att-bad  .att-dot { background: var(--bad) }
+.att-warn .att-dot { background: var(--warn) }
+.att-info .att-dot { background: var(--teal) }
+.att-msg { flex: 1; color: var(--T) }
+.att-bad .att-msg { font-weight: 600 }
+.att-arrow { color: var(--mut); font-size: .8rem }
+.dash-tbl { width: 100%; border-collapse: collapse; font-size: .76rem }
+.dash-tbl th { text-align: left; font-size: .6rem; font-weight: 700; letter-spacing: .1em; color: var(--mut); text-transform: uppercase; padding: .35rem .6rem; border-bottom: 1px solid var(--rule) }
+.dash-tbl td { padding: .42rem .6rem; border-bottom: 1px solid var(--rule2) }
+.dash-tbl tbody tr { cursor: pointer }
+.dash-tbl tbody tr:hover { background: var(--off) }
+.dash-tbl tr:last-child td { border-bottom: 0 }
+.dash-prog { display: inline-block; width: 64px; height: 5px; background: var(--off2); border-radius: 2px; overflow: hidden; vertical-align: middle }
+.dash-prog-fill { height: 100%; background: var(--teal) }
+.dash-prog-lbl { font-size: .66rem; color: var(--mut); margin-left: .4rem; font-variant-numeric: tabular-nums }
+.dash-st { font-size: .58rem; font-weight: 800; letter-spacing: .1em; padding: .12rem .4rem; border-radius: 2px }
+.dash-st.running { color: var(--teal); background: var(--teal-tint) }
+.dash-st.paused  { color: var(--warn); background: #f7ecdc }
+.dash-st.behind  { color: var(--bad); background: #f8e9e6 }
+.sync-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block }
+.sync-dot.ok   { background: #2e7d4f }
+.sync-dot.warn { background: var(--warn) }
+.sync-dot.bad  { background: var(--bad) }
+.sync-dot.info { background: var(--rule2) }
+.trend-bars { display: flex; align-items: flex-end; gap: .45rem; height: 78px }
+.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100% }
+.trend-val { font-size: .58rem; color: var(--mut); font-variant-numeric: tabular-nums; margin-bottom: .15rem }
+.trend-bar-wrap { display: flex; align-items: flex-end; width: 100% }
+.trend-bar { width: 100%; background: var(--teal); border-radius: 1px 1px 0 0; position: relative; overflow: hidden }
+.trend-bar-rej { position: absolute; top: 0; left: 0; right: 0; background: var(--bad) }
+.trend-lbl { font-size: .56rem; font-weight: 700; letter-spacing: .08em; color: var(--mut); text-transform: uppercase; margin-top: .25rem }
+
 /* ─── owner / operator mode ─── */
 .mode-chip {
   border: 1px solid var(--rule2);
@@ -1117,6 +1163,7 @@ function attemptSync() {
     }).then(() => {
       clearSyncPending();
       _syncBackoffMs = 5000;
+      try { localStorage.setItem('toolflux.machlog.lastSyncOk', new Date().toISOString()); } catch (e) {}
     }).catch(() => scheduleSyncRetry());
   } catch(_) { scheduleSyncRetry(); }
 }
@@ -1196,7 +1243,7 @@ function datalist(id, histKey) {
 const OWNER_SESSION_KEY = 'toolflux.machlog.owner';
 const PIN_ATTEMPT_KEY = 'toolflux.machlog.pinAttempts';
 const OWNER_TIMEOUT_MS = 15 * 60 * 1000;
-const OWNER_VIEWS = ['settings', 'inventory', 'report', 'newjob', 'paywall'];
+const OWNER_VIEWS = ['settings', 'inventory', 'report', 'newjob', 'paywall', 'dash'];
 
 // Pure-JS synchronous SHA-256 — crypto.subtle is unavailable on some
 // file:// contexts and old shop-PC browsers, so no async, no dependencies.
@@ -1349,8 +1396,8 @@ function submitPinUnlock(e) {
     closePinModal();
     toast('Owner Mode unlocked', 'ok');
     const cb = pinAfterUnlock; pinAfterUnlock = null;
-    render();
-    if (cb) cb();
+    if (cb) { render(); cb(); }
+    else navigate('dash'); // Owner Home — default landing on unlock
   } else {
     recordPinAttempt();
     if (err) err.textContent = 'Incorrect PIN';
@@ -1438,6 +1485,321 @@ function vOperatorLocked(licenseIssue) {
         ? 'The subscription for this app needs to be renewed. Please ask the owner to unlock and handle it.'
         : 'This section is only available in Owner Mode.'}</div>
       <button class="btn btn-pri" onclick="openPinDialog()">Unlock Owner Mode</button>
+    </div>`;
+}
+
+// ── owner dashboard ───────────────────────────────────────────────
+// Single-pass aggregation: each job's log is walked once, calcStation runs
+// exactly once per station, and every section reads from this one snapshot.
+function computeDashData() {
+  const now = new Date();
+  const dayKey = d => d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+  const days = [];
+  const dayMap = {};
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now); d.setDate(d.getDate() - i);
+    const b = { key: dayKey(d), label: d.toLocaleDateString('en-IN', { weekday: 'short' }).slice(0, 2), qty: 0, rej: 0 };
+    days.push(b); dayMap[b.key] = b;
+  }
+  const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+  const weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 6); weekStart.setHours(0, 0, 0, 0);
+  const staleMs = Date.now() - 48 * 3600 * 1000;
+  const d7 = Date.now() - 7 * 86400000, d14 = Date.now() - 14 * 86400000;
+
+  const out = {
+    activeJobs: 0, pausedJobs: 0, completedJobs: 0,
+    totalProduced: 0, totalGood: 0, totalRejected: 0,
+    prodToday: 0, prodWeek: 0, days,
+    jobRows: [], anomalyStations: [], nearingStations: [], lowLifeStations: [],
+    costliest: null, invAlerts: [], attention: [],
+    lifeRecent: null, lifePrior: null,
+  };
+
+  let lifeRs = 0, lifeRn = 0, lifePs = 0, lifePn = 0;
+  const noLogToday = [];
+
+  (db.jobs || []).forEach(job => {
+    const status = job.status || 'active';
+    if (status === 'active') out.activeJobs++;
+    else if (status === 'paused') out.pausedJobs++;
+    else if (status === 'complete') out.completedJobs++;
+
+    const ops = job.operations || [];
+    const opGood = {}, opProd = {};
+    let jobProduced = 0, jobRejected = 0, lastTs = null, lastOpId = null, todayQty = 0;
+
+    (job.productionLog || []).forEach(e => {
+      const q = Number(e.qty) || 0;
+      const g = Number(e.qtyGood != null ? e.qtyGood : e.qty) || 0;
+      jobProduced += q; jobRejected += (q - g);
+      if (e.operationId) {
+        opProd[e.operationId] = (opProd[e.operationId] || 0) + q;
+        opGood[e.operationId] = (opGood[e.operationId] || 0) + g;
+      }
+      const ts = new Date(e.timestamp);
+      if (!lastTs || ts > lastTs) { lastTs = ts; lastOpId = e.operationId; }
+      const b = dayMap[dayKey(ts)];
+      if (b) { b.qty += q; b.rej += (q - g); }
+      if (ts >= todayStart) { out.prodToday += q; todayQty += q; }
+      if (ts >= weekStart) out.prodWeek += q;
+    });
+
+    out.totalProduced += jobProduced;
+    out.totalRejected += jobRejected;
+    const finalOp = ops.length ? ops[ops.length - 1] : null;
+    const goodFinal = finalOp && Object.keys(opGood).length
+      ? (opGood[finalOp.id] || 0)
+      : Math.max(0, jobProduced - jobRejected);
+    out.totalGood += goodFinal;
+
+    // Stations: calcStation once each, collected for job-relative comparisons
+    const scs = [];
+    ops.forEach(op => (op.stations || []).forEach(st => scs.push({ st, sc: calcStation(st) })));
+    const lives = scs.map(x => x.sc.avgCornerLife).filter(v => v != null && v > 0);
+    const jobAvgLife = lives.length ? lives.reduce((a, b) => a + b, 0) / lives.length : null;
+
+    scs.forEach(({ st, sc }) => {
+      const ref = { jobId: job.id, stationId: st.id, code: job.componentCode, name: st.name };
+      if (sc.anomalies.length) out.anomalyStations.push({ ...ref, n: sc.anomalies.length });
+      else if (sc.lifeStatus === 'overdue' || sc.lifeStatus === 'warn') {
+        out.nearingStations.push({ ...ref, status: sc.lifeStatus, remaining: sc.pcsRemainingOnCorner });
+      } else if (jobAvgLife && sc.avgCornerLife != null && sc.spentSets.length >= 1 && sc.avgCornerLife < jobAvgLife * 0.55) {
+        out.lowLifeStations.push({ ...ref, avg: sc.avgCornerLife, jobAvg: Math.round(jobAvgLife) });
+      }
+      const spend = sc.sets.length * sc.setCost;
+      if (spend > 0 && (!out.costliest || spend > out.costliest.spend)) out.costliest = { ...ref, spend };
+      sc.sets.forEach(set => (set.corners || []).forEach(c => {
+        if (c.endedAt && (c.componentsMade || 0) > 0) {
+          const t = new Date(c.endedAt).getTime();
+          if (t >= d7) { lifeRs += c.componentsMade; lifeRn++; }
+          else if (t >= d14) { lifePs += c.componentsMade; lifePn++; }
+        }
+      }));
+    });
+
+    if (status === 'active' || status === 'paused') {
+      const batch = Number(job.batchQty) || 0;
+      const remaining = batch > 0 ? Math.max(0, batch - goodFinal) : null;
+      const behind = status === 'active' && jobProduced > 0 && lastTs && lastTs.getTime() < staleMs && (remaining == null || remaining > 0);
+      const curOp = (lastOpId && ops.find(o => o.id === lastOpId)) || ops[0] || null;
+      out.jobRows.push({
+        jobId: job.id, code: job.componentCode, customer: job.customer || '',
+        opName: curOp ? curOp.name : '—', good: goodFinal, batch, remaining,
+        status, behind,
+        priority: status === 'paused' ? 0 : behind ? 1 : 2,
+      });
+      if (status === 'active' && jobProduced > 0 && todayQty === 0) noLogToday.push({ jobId: job.id, code: job.componentCode });
+    }
+  });
+
+  out.jobRows.sort((a, b) => a.priority - b.priority || (b.good / (b.batch || Infinity)) - (a.good / (a.batch || Infinity)));
+  if (lifeRn) out.lifeRecent = Math.round(lifeRs / lifeRn);
+  if (lifePn) out.lifePrior = Math.round(lifePs / lifePn);
+
+  // Inventory alerts — linked-station needs first, then generic
+  const linkedNeed = {};
+  (db.jobs || []).forEach(j => (j.operations || []).forEach(op => (op.stations || []).forEach(st => {
+    if (st.inventoryItemId) linkedNeed[st.inventoryItemId] = Math.max(linkedNeed[st.inventoryItemId] || 0, stationLoadNeed(st));
+  })));
+  (db.inventory || []).forEach(item => {
+    const qty = item.qtyInStock || 0;
+    const need = linkedNeed[item.id] || 0;
+    if (qty < 0) out.invAlerts.push({ kind: 'bad', label: 'Negative stock', item: item.designation, qty });
+    else if (qty === 0 && need > 0) out.invAlerts.push({ kind: 'bad', label: 'Out of stock', item: item.designation, qty });
+    else if (need > 0 && qty <= need) out.invAlerts.push({ kind: 'warn', label: 'Low stock', item: item.designation, qty });
+    else if (qty === 0) out.invAlerts.push({ kind: 'warn', label: 'Out of stock', item: item.designation, qty });
+    else if (item.createdAt && new Date(item.createdAt).getTime() >= d7) out.invAlerts.push({ kind: 'info', label: 'Recently added', item: item.designation, qty });
+  });
+  out.invAlerts.sort((a, b) => ({ bad: 0, warn: 1, info: 2 }[a.kind] - { bad: 0, warn: 1, info: 2 }[b.kind]));
+  out.invAlerts = out.invAlerts.slice(0, 8);
+
+  // Sync health
+  let pendingSince = null, lastOk = null;
+  try { pendingSince = localStorage.getItem(SYNC_PENDING_KEY); lastOk = localStorage.getItem('toolflux.machlog.lastSyncOk'); } catch (e) {}
+  const online = navigator.onLine !== false;
+  const pendingAgeMin = pendingSince ? Math.round((Date.now() - new Date(pendingSince).getTime()) / 60000) : 0;
+  out.sync = {
+    online, pendingSince, pendingAgeMin, lastOk,
+    state: !SYNC_URL ? 'disabled'
+      : pendingSince ? (online ? (pendingAgeMin > 60 ? 'failing' : 'pending') : 'offline')
+      : (lastOk ? 'ok' : 'idle'),
+  };
+
+  // Attention Required — severity-ordered, capped
+  const att = out.attention;
+  if (out.sync.state === 'failing') att.push({ sev: 'bad', msg: `Cloud backup failing — changes pending for ${pendingAgeMin > 120 ? Math.round(pendingAgeMin / 60) + ' h' : pendingAgeMin + ' min'}`, go: null });
+  if (getLicenseStatus() === 'trial' && getTrialDaysLeft() <= 3) att.push({ sev: 'bad', msg: `Trial ends in ${getTrialDaysLeft()} day${getTrialDaysLeft() === 1 ? '' : 's'} — subscribe to keep tracking`, go: `navigate('paywall')` });
+  out.invAlerts.filter(a => a.kind === 'bad').slice(0, 2).forEach(a => att.push({ sev: 'bad', msg: `${a.label}: ${a.item}`, go: `navigate('inventory')` }));
+  out.anomalyStations.slice(0, 3).forEach(s => att.push({ sev: 'bad', msg: `${s.code} · ${s.name} — abnormal insert failure${s.n > 1 ? 's (' + s.n + ')' : ''}`, go: `navigate('station',{jobId:'${s.jobId}',stationId:'${s.stationId}'})` }));
+  out.jobRows.filter(r => r.status === 'paused').slice(0, 2).forEach(r => att.push({ sev: 'warn', msg: `${r.code} is paused`, go: `navigate('job',{jobId:'${r.jobId}'})` }));
+  noLogToday.slice(0, 3).forEach(j => att.push({ sev: 'warn', msg: `${j.code} — no production logged today`, go: `navigate('job',{jobId:'${j.jobId}'})` }));
+  out.invAlerts.filter(a => a.kind === 'warn').slice(0, 2).forEach(a => att.push({ sev: 'warn', msg: `${a.label}: ${a.item} (${a.qty} left)`, go: `navigate('inventory')` }));
+  if (!hasOwnerPin()) att.push({ sev: 'info', msg: 'Owner PIN not set — operators have full access', go: `openPinSetup()` });
+  if (!(db.jobs || []).length) att.push({ sev: 'info', msg: 'No jobs yet — create your first component job', go: `navigate('newjob')` });
+  out.attention = att.slice(0, 8);
+
+  return out;
+}
+
+function fmtAgo(iso) {
+  if (!iso) return 'never';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + ' min ago';
+  if (mins < 1440) return Math.round(mins / 60) + ' h ago';
+  return fmtDate(iso);
+}
+
+function vDashboard() {
+  const d = computeDashData();
+  setTabs(`
+    <button class="tab" aria-selected="true">Dashboard</button>
+    <button class="tab" onclick="navigate('jobs')">Jobs</button>
+    <button class="tab" onclick="navigate('inventory')">Inventory</button>
+    <button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>`);
+  setBarCrumb('Dashboard', true);
+
+  const rejPct = d.totalProduced > 0 ? (d.totalRejected / d.totalProduced * 100) : 0;
+
+  const attHtml = d.attention.length ? `
+    <div class="panel" style="margin-bottom:.6rem">
+      <div class="panel-hd"><span class="lbl">Attention Required</span><div class="hr"></div><span class="lbl muted">${d.attention.length}</span></div>
+      ${d.attention.map(a => `
+        <div class="att-row att-${a.sev}" ${a.go ? `role="button" tabindex="0" onclick="${esc(a.go)}"` : ''}>
+          <span class="att-dot"></span>
+          <span class="att-msg">${esc(a.msg)}</span>
+          ${a.go ? '<span class="att-arrow">&#8594;</span>' : ''}
+        </div>`).join('')}
+    </div>` : `
+    <div class="panel" style="margin-bottom:.6rem">
+      <div style="padding:.6rem 1rem;font-size:.75rem;color:var(--ok,#2e7d4f);font-weight:600">All clear — nothing needs your attention right now.</div>
+    </div>`;
+
+  const summaryHtml = `
+    <div class="panel" style="margin-bottom:.6rem">
+      <div class="stat-strip">
+        <div class="s-stat"><div class="lbl">Active Jobs</div><div><span class="s-val">${fmtN(d.activeJobs)}</span></div><div class="s-sub">${d.pausedJobs ? d.pausedJobs + ' paused' : 'In production'}</div></div>
+        <div class="s-stat"><div class="lbl">Completed</div><div><span class="s-val">${fmtN(d.completedJobs)}</span></div><div class="s-sub">Jobs finished</div></div>
+        <div class="s-stat"><div class="lbl">Good Components</div><div><span class="s-val">${fmtN(d.totalGood)}</span></div><div class="s-sub">All time</div></div>
+        <div class="s-stat"><div class="lbl">Rejections</div><div><span class="s-val ${d.totalRejected > 0 ? 'bad-c' : ''}">${fmtN(d.totalRejected)}</span></div><div class="s-sub">${rejPct.toFixed(1)}% overall</div></div>
+        <div class="s-stat"><div class="lbl">Today</div><div><span class="s-val">${fmtN(d.prodToday)}</span></div><div class="s-sub">Pcs logged</div></div>
+        <div class="s-stat"><div class="lbl">This Week</div><div><span class="s-val">${fmtN(d.prodWeek)}</span></div><div class="s-sub">Last 7 days</div></div>
+      </div>
+    </div>`;
+
+  const jobRowsShown = d.jobRows.slice(0, 30);
+  const jobsHtml = `
+    <div class="panel" style="margin-bottom:.6rem">
+      <div class="panel-hd"><span class="lbl">Job Status</span><div class="hr"></div><span class="lbl muted">${d.jobRows.length} job${d.jobRows.length === 1 ? '' : 's'}</span></div>
+      ${!d.jobRows.length ? '<div style="padding:.8rem 1rem;font-size:.75rem;color:var(--mut)">No active jobs.</div>' : `
+      <div style="overflow-x:auto"><table class="dash-tbl">
+        <thead><tr><th>Component</th><th>Customer</th><th>Op</th><th style="min-width:110px">Progress</th><th style="text-align:right">Good</th><th style="text-align:right">Batch</th><th style="text-align:right">Left</th><th>Status</th></tr></thead>
+        <tbody>
+        ${jobRowsShown.map(r => {
+          const pct = r.batch > 0 ? Math.min(100, Math.round(r.good / r.batch * 100)) : null;
+          const stTxt = r.status === 'paused' ? '<span class="dash-st paused">PAUSED</span>'
+            : r.behind ? '<span class="dash-st behind">NO RECENT LOG</span>'
+            : '<span class="dash-st running">RUNNING</span>';
+          return `<tr role="button" tabindex="0" onclick="navigate('job',{jobId:'${r.jobId}'})">
+            <td class="mono" style="font-weight:700">${esc(r.code)}</td>
+            <td style="color:var(--mut)">${esc(r.customer || '—')}</td>
+            <td>${esc(r.opName)}</td>
+            <td>${pct != null ? `<div class="dash-prog"><div class="dash-prog-fill" style="width:${pct}%"></div></div><span class="dash-prog-lbl">${pct}%</span>` : '<span style="color:var(--mut);font-size:.68rem">no batch qty</span>'}</td>
+            <td class="num" style="text-align:right;font-weight:700">${fmtN(r.good)}</td>
+            <td class="num" style="text-align:right;color:var(--mut)">${r.batch ? fmtN(r.batch) : '—'}</td>
+            <td class="num" style="text-align:right">${r.remaining != null ? fmtN(r.remaining) : '—'}</td>
+            <td>${stTxt}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table></div>
+      ${d.jobRows.length > 30 ? `<div style="padding:.4rem 1rem;font-size:.7rem"><a href="#" onclick="event.preventDefault();navigate('jobs')">View all ${d.jobRows.length} jobs &#8594;</a></div>` : ''}`}
+    </div>`;
+
+  const healthRows = [
+    ...d.anomalyStations.slice(0, 4).map(s => `<div class="att-row att-bad" role="button" tabindex="0" onclick="navigate('station',{jobId:'${s.jobId}',stationId:'${s.stationId}'})"><span class="att-dot"></span><span class="att-msg">${esc(s.code)} &middot; ${esc(s.name)} — ${s.n} anomal${s.n === 1 ? 'y' : 'ies'}</span><span class="att-arrow">&#8594;</span></div>`),
+    ...d.nearingStations.slice(0, 4).map(s => `<div class="att-row att-warn" role="button" tabindex="0" onclick="navigate('station',{jobId:'${s.jobId}',stationId:'${s.stationId}'})"><span class="att-dot"></span><span class="att-msg">${esc(s.code)} &middot; ${esc(s.name)} — ${s.status === 'overdue' ? 'index/replace due' : `~${s.remaining != null ? s.remaining + ' pcs left' : 'nearing replacement'}`}</span><span class="att-arrow">&#8594;</span></div>`),
+    ...d.lowLifeStations.slice(0, 3).map(s => `<div class="att-row att-warn" role="button" tabindex="0" onclick="navigate('station',{jobId:'${s.jobId}',stationId:'${s.stationId}'})"><span class="att-dot"></span><span class="att-msg">${esc(s.code)} &middot; ${esc(s.name)} — low corner life (${s.avg} vs job avg ${s.jobAvg})</span><span class="att-arrow">&#8594;</span></div>`),
+    ...(d.costliest ? [`<div class="att-row att-info" role="button" tabindex="0" onclick="navigate('station',{jobId:'${d.costliest.jobId}',stationId:'${d.costliest.stationId}'})"><span class="att-dot"></span><span class="att-msg">Highest tooling spend: ${esc(d.costliest.code)} &middot; ${esc(d.costliest.name)} — ${fmtRs(d.costliest.spend, 0)}</span><span class="att-arrow">&#8594;</span></div>`] : []),
+  ];
+  const healthHtml = `
+    <div class="panel">
+      <div class="panel-hd"><span class="lbl">Insert Health</span><div class="hr"></div></div>
+      ${healthRows.length ? healthRows.join('') : '<div style="padding:.7rem 1rem;font-size:.73rem;color:var(--mut)">No insert issues detected.</div>'}
+    </div>`;
+
+  const invHtml = `
+    <div class="panel">
+      <div class="panel-hd"><span class="lbl">Inventory Alerts</span><div class="hr"></div></div>
+      ${d.invAlerts.length ? d.invAlerts.map(a => `
+        <div class="att-row att-${a.kind}" role="button" tabindex="0" onclick="navigate('inventory')">
+          <span class="att-dot"></span>
+          <span class="att-msg">${esc(a.label)}: ${esc(a.item)}${a.kind !== 'info' ? ` (${a.qty})` : ''}</span>
+          <span class="att-arrow">&#8594;</span>
+        </div>`).join('') : '<div style="padding:.7rem 1rem;font-size:.73rem;color:var(--mut)">No inventory alerts.</div>'}
+    </div>`;
+
+  const syncStates = {
+    ok:       { cls: 'ok',   label: 'Backed up',        detail: 'Last sync ' + fmtAgo(d.sync.lastOk) },
+    pending:  { cls: 'warn', label: 'Sync in progress', detail: 'Changes queued ' + (d.sync.pendingAgeMin || 0) + ' min ago' },
+    failing:  { cls: 'bad',  label: 'Sync failing',     detail: 'Pending for ' + (d.sync.pendingAgeMin > 120 ? Math.round(d.sync.pendingAgeMin / 60) + ' h' : d.sync.pendingAgeMin + ' min') + ' — retrying automatically' },
+    offline:  { cls: 'warn', label: 'Offline',          detail: 'Changes queued — will sync when back online' },
+    idle:     { cls: 'info', label: 'Waiting',          detail: 'No sync completed yet this device' },
+    disabled: { cls: 'info', label: 'Sync disabled',    detail: '' },
+  };
+  const ss = syncStates[d.sync.state] || syncStates.idle;
+  const syncHtml = `
+    <div class="panel">
+      <div class="panel-hd"><span class="lbl">Cloud Backup</span><div class="hr"></div></div>
+      <div style="padding:.7rem 1rem">
+        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.3rem">
+          <span class="sync-dot ${ss.cls}"></span>
+          <span style="font-weight:700;font-size:.85rem;color:var(--navy)">${ss.label}</span>
+          ${!d.sync.online ? '<span class="lbl" style="color:var(--warn)">OFFLINE</span>' : ''}
+        </div>
+        <div style="font-size:.72rem;color:var(--mut)">${esc(ss.detail)}</div>
+        <div style="font-size:.68rem;color:var(--mut);margin-top:.35rem">Last successful: ${fmtAgo(d.sync.lastOk)} &middot; Pending changes: ${d.sync.pendingSince ? 'yes' : 'none'}</div>
+      </div>
+    </div>`;
+
+  const maxQty = Math.max(1, ...d.days.map(b => b.qty));
+  const lifeTrend = d.lifeRecent != null
+    ? `Avg corner life 7d: <strong>${d.lifeRecent} pcs</strong>${d.lifePrior != null ? ` (prior 7d: ${d.lifePrior}) ${d.lifeRecent >= d.lifePrior ? '<span style="color:var(--ok,#2e7d4f)">&#9650;</span>' : '<span style="color:var(--bad)">&#9660;</span>'}` : ''}`
+    : 'No spent corners in the last 7 days.';
+  const trendHtml = `
+    <div class="panel">
+      <div class="panel-hd"><span class="lbl">Production — Last 7 Days</span><div class="hr"></div><span class="lbl muted">${fmtN(d.prodWeek)} pcs</span></div>
+      <div style="padding:.7rem 1rem .5rem">
+        <div class="trend-bars">
+          ${d.days.map(b => {
+            const h = Math.round(b.qty / maxQty * 46);
+            const rejH = b.qty > 0 ? Math.round(b.rej / maxQty * 46) : 0;
+            return `<div class="trend-col" title="${b.qty} pcs${b.rej ? ', ' + b.rej + ' rejected' : ''}">
+              <div class="trend-val">${b.qty > 0 ? fmtN(b.qty) : ''}</div>
+              <div class="trend-bar-wrap">
+                <div class="trend-bar" style="height:${Math.max(b.qty > 0 ? 3 : 0, h)}px">
+                  ${rejH > 0 ? `<div class="trend-bar-rej" style="height:${Math.max(2, rejH)}px"></div>` : ''}
+                </div>
+              </div>
+              <div class="trend-lbl">${b.label}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="font-size:.7rem;color:var(--mut);margin-top:.5rem;border-top:1px solid var(--rule2);padding-top:.45rem">${lifeTrend}</div>
+      </div>
+    </div>`;
+
+  return `
+    ${attHtml}
+    ${summaryHtml}
+    ${jobsHtml}
+    <div class="dash-2col">
+      ${healthHtml}
+      ${invHtml}
+    </div>
+    <div class="dash-2col">
+      ${syncHtml}
+      ${trendHtml}
     </div>`;
 }
 
@@ -1699,7 +2061,7 @@ function vJobs() {
     const sel = filter === key ? 'aria-selected="true"' : '';
     return `<button class="tab" ${sel} onclick="setJobFilter('${key}')">${lbl}${count ? `<span class="n">${count}</span>` : ''}</button>`;
   }).join('');
-  setTabs(tabHtml + (owner
+  setTabs((owner ? `<button class="tab" onclick="navigate('dash')">&#8962; Dashboard</button>` : '') + tabHtml + (owner
     ? `<button class="tab" onclick="navigate('inventory')">Inventory</button><button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>`
     : ''));
   setBarCrumb('', false);
@@ -3267,6 +3629,7 @@ function render() {
     else if (ui.view === 'report') html = vReport();
     else if (ui.view === 'settings')  html = vSettings();
     else if (ui.view === 'inventory') html = vInventory();
+    else if (ui.view === 'dash')      html = vDashboard();
     else html = vJobs();
   } catch(e) {
     console.error('Render error', e);
@@ -3701,7 +4064,7 @@ function submitSetup(e) {
   addHistory('operators', db.settings.defaultOperator);
   addHistory('machines', db.settings.defaultMachine);
   saveDB();
-  navigate('jobs');
+  navigate('dash');
 }
 
 function submitSettings(e) {
@@ -3993,6 +4356,7 @@ Object.assign(window, {
 // ── init ──────────────────────────────────────────────────────────
 loadDB();
 if (!db.settings.company) ui.view = 'setup';
+else if (hasOwnerPin() && isOwner()) ui.view = 'dash'; // Owner Home when session still unlocked
 render();
 
 // Owner-mode auto-lock: any interaction refreshes the 15-min window;
