@@ -596,6 +596,53 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .cpc-tbl .cpc-val { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--teal) }
 .cpc-tbl .insert-name { font-family: var(--mono); font-weight: 700; color: var(--navy) }
 
+/* ─── shift proof ─── */
+.proof-wrap { max-width: 430px; margin: 0 auto }
+.proof {
+  background: #fefffe; color: #0d1e26;
+  border: 2px solid var(--navy); border-radius: 2px;
+  padding: 1rem 1.1rem .8rem;
+}
+.proof-hd { display: flex; justify-content: space-between; align-items: flex-start; gap: .8rem; border-bottom: 2px solid var(--navy); padding-bottom: .6rem; margin-bottom: .6rem }
+.proof-co { font-size: .68rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--navy) }
+.proof-title { font-family: var(--mono); font-size: 1.02rem; font-weight: 800; letter-spacing: .06em; color: var(--navy); margin-top: .15rem }
+.proof-date { text-align: right }
+.proof-date .d { font-family: var(--mono); font-size: .78rem; font-weight: 700; color: var(--navy); margin-bottom: .3rem }
+.proof-sync { font-size: .6rem; font-weight: 800; letter-spacing: .12em; padding: .22rem .5rem; border-radius: 2px; white-space: nowrap }
+.proof-sync.ok   { background: #e3f2e9; color: #1d6b40; border: 1px solid #1d6b40 }
+.proof-sync.warn { background: #f7ecdc; color: #8a5200; border: 1px solid #8a5200 }
+.proof-sync.idle { background: var(--off2); color: var(--mut); border: 1px solid var(--rule2) }
+.proof-meta { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; font-size: .78rem; padding-bottom: .55rem; border-bottom: 1px solid var(--rule); margin-bottom: .3rem }
+.proof-meta b { font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--mut); margin-right: .3rem }
+.proof-job { padding: .55rem 0; border-bottom: 1px solid var(--rule) }
+.proof-job-hd { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem }
+.proof-job-code { font-family: var(--mono); font-size: .95rem; font-weight: 800; color: var(--navy) }
+.proof-job-op { font-size: .68rem; color: var(--mut); font-weight: 600 }
+.proof-job-nums { display: flex; gap: 1rem; align-items: baseline; margin-top: .2rem }
+.proof-good { font-family: var(--mono); font-size: 1.35rem; font-weight: 800; color: var(--navy) }
+.proof-good small, .proof-rej small { font-size: .62rem; font-weight: 600; color: var(--mut); margin-left: .15rem }
+.proof-rej { font-family: var(--mono); font-size: 1.05rem; font-weight: 800; color: var(--bad) }
+.proof-entries { font-size: .68rem; color: var(--mut); margin-left: auto }
+.proof-reasons { font-size: .72rem; color: var(--bad); margin-top: .15rem }
+.proof-station { font-size: .72rem; color: var(--T); margin-top: .18rem; font-family: var(--mono) }
+.proof-empty { padding: 1.2rem 0; text-align: center; font-size: .8rem; color: var(--mut) }
+.proof-totals { display: flex; gap: 0; border-bottom: 1px solid var(--rule); margin-top: .1rem }
+.proof-totals .pt { flex: 1; text-align: center; padding: .55rem .2rem .45rem; border-right: 1px solid var(--rule) }
+.proof-totals .pt:last-child { border-right: 0 }
+.pt-n { font-family: var(--mono); font-size: 1.3rem; font-weight: 800; color: var(--navy); font-variant-numeric: tabular-nums }
+.pt-n.rej { color: var(--bad) }
+.pt-l { font-size: .52rem; font-weight: 700; letter-spacing: .12em; color: var(--mut); margin-top: .1rem }
+.proof-ft { display: flex; align-items: center; gap: .5rem; font-size: .64rem; color: var(--mut); padding-top: .55rem }
+.proof-install { margin-left: auto; font-family: var(--mono); font-size: .56rem; letter-spacing: .05em; color: var(--rule2) }
+.proof-acts { display: flex; gap: .6rem; margin-top: .75rem }
+.proof-acts .btn { flex: 1 }
+.proof-hint { text-align: center; font-size: .68rem; color: var(--mut); margin-top: .6rem }
+@media (max-width: 640px) {
+  .proof { padding: .85rem .8rem .65rem }
+  .proof-good { font-size: 1.55rem }
+  .pt-n { font-size: 1.45rem }
+}
+
 /* ─── station mobile quick actions (phone-only; desktop keeps existing buttons) ─── */
 .st-mobile-acts { display: none }
 
@@ -1839,6 +1886,204 @@ function vDashboard() {
     </div>`;
 }
 
+// ── shift proof ───────────────────────────────────────────────────
+// One screenshot = proof of the shift. Derived entirely from today's
+// production log entries; no stored shift entity, no financial data.
+function computeShiftData() {
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const out = {
+    jobs: [], totGood: 0, totRej: 0, totEntries: 0,
+    operators: [], machines: [], minTs: null, maxTs: null,
+    indexesToday: 0, insertChangesToday: 0, stationsUsed: 0,
+  };
+  const operators = new Set(), machines = new Set();
+
+  (db.jobs || []).forEach(job => {
+    const ops = job.operations || [];
+    const entries = (job.productionLog || []).filter(e => new Date(e.timestamp) >= todayStart);
+
+    // Insert activity today (covers quick-index too, which has no log entry)
+    ops.forEach(o => (o.stations || []).forEach(st => {
+      (st.insertSets || []).forEach(set => {
+        if (new Date(set.loadedAt) >= todayStart) out.insertChangesToday++;
+        (set.corners || []).forEach(c => {
+          if (c.endedAt && c.status === 'indexed' && new Date(c.endedAt) >= todayStart) out.indexesToday++;
+        });
+      });
+    }));
+
+    if (!entries.length) return;
+    const jb = { jobId: job.id, code: job.componentCode, desc: job.componentDesc || '',
+      good: 0, rej: 0, reasons: {}, opNames: new Set(), entries: entries.length, stations: [] };
+
+    entries.forEach(e => {
+      const q = Number(e.qty) || 0;
+      const g = Number(e.qtyGood != null ? e.qtyGood : e.qty) || 0;
+      jb.good += g; jb.rej += (q - g);
+      (e.rejections || []).forEach(r => { if (r.reason) jb.reasons[r.reason] = (jb.reasons[r.reason] || 0) + (Number(r.qty) || 0); });
+      const op = ops.find(o => o.id === e.operationId);
+      if (op) jb.opNames.add(op.name);
+      if (e.operator) operators.add(e.operator);
+      if (e.machine) machines.add(e.machine);
+      const ts = new Date(e.timestamp);
+      if (!out.minTs || ts < out.minTs) out.minTs = ts;
+      if (!out.maxTs || ts > out.maxTs) out.maxTs = ts;
+    });
+
+    // Current corner state of the stations behind today's operations
+    ops.forEach(o => {
+      if (!jb.opNames.has(o.name)) return;
+      (o.stations || []).forEach(st => {
+        const sc = calcStation(st);
+        if (!sc.activeSet) return;
+        jb.stations.push({
+          name: st.name,
+          state: isSolidTool(st.opType)
+            ? `Tool #${sc.currentSetNum} \xb7 ${fmtN(sc.currentCornerPcs)} pcs`
+            : `C${sc.currentCornerNum || '?'}/${sc.totalCorners} \xb7 ${fmtN(sc.currentCornerPcs)} pcs on edge`,
+        });
+      });
+    });
+
+    out.totGood += jb.good; out.totRej += jb.rej; out.totEntries += jb.entries;
+    out.jobs.push(jb);
+  });
+
+  out.operators = [...operators];
+  out.machines = [...machines];
+  out.stationsUsed = out.jobs.reduce((s, j) => s + j.stations.length, 0);
+
+  // Sync state — same signals the dashboard uses
+  let pendingSince = null, lastOk = null;
+  try { pendingSince = localStorage.getItem(SYNC_PENDING_KEY); lastOk = localStorage.getItem('toolflux.machlog.lastSyncOk'); } catch (e) {}
+  const online = navigator.onLine !== false;
+  out.sync = pendingSince
+    ? (online ? 'pending' : 'offline')
+    : (lastOk ? 'synced' : 'idle');
+  out.lastOk = lastOk;
+  return out;
+}
+
+function vShiftProof() {
+  setTabs(`
+    <button class="tab" onclick="navigate('jobs')">&#8592; Jobs</button>
+    <button class="tab" aria-selected="true">Shift Proof</button>`);
+  setBarCrumb('Shift Proof', true);
+
+  const d = computeShiftData();
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const range = d.minTs
+    ? `${d.minTs.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} – ${d.maxTs.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+    : '—';
+
+  const syncChip = {
+    synced:  '<span class="proof-sync ok">&#10003; SYNCED</span>',
+    pending: '<span class="proof-sync warn">&#8635; WAITING FOR SYNC</span>',
+    offline: '<span class="proof-sync warn">OFFLINE — QUEUED</span>',
+    idle:    '<span class="proof-sync idle">NOT SYNCED YET</span>',
+  }[d.sync];
+
+  const jobBlocks = d.jobs.map(jb => {
+    const reasons = Object.entries(jb.reasons).map(([r, n]) => `${esc(r)} \xd7${n}`).join(', ');
+    return `
+      <div class="proof-job">
+        <div class="proof-job-hd">
+          <span class="proof-job-code">${esc(jb.code)}</span>
+          <span class="proof-job-op">${esc([...jb.opNames].join(', ') || '—')}</span>
+        </div>
+        <div class="proof-job-nums">
+          <span class="proof-good">${fmtN(jb.good)} <small>good</small></span>
+          ${jb.rej > 0 ? `<span class="proof-rej">${fmtN(jb.rej)} <small>rejected</small></span>` : ''}
+          <span class="proof-entries">${jb.entries} entr${jb.entries === 1 ? 'y' : 'ies'}</span>
+        </div>
+        ${reasons ? `<div class="proof-reasons">Rejection: ${reasons}</div>` : ''}
+        ${jb.stations.map(s => `<div class="proof-station">${esc(s.name)} — ${esc(s.state)}</div>`).join('')}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="proof-wrap">
+      <div class="proof" id="shift-proof">
+        <div class="proof-hd">
+          <div>
+            <div class="proof-co">TOOLFLUX${db.settings.company ? ' — ' + esc(db.settings.company) : ''}</div>
+            <div class="proof-title">PROOF OF PRODUCTION</div>
+          </div>
+          <div class="proof-date">
+            <div class="d">${esc(dateStr)}</div>
+            ${syncChip}
+          </div>
+        </div>
+        <div class="proof-meta">
+          <span><b>Shift</b> ${esc(range)}</span>
+          <span><b>Operator</b> ${esc(d.operators.join(', ') || db.settings.defaultOperator || '—')}</span>
+          <span><b>Machine</b> ${esc(d.machines.join(', ') || '—')}</span>
+        </div>
+        ${d.jobs.length ? jobBlocks : '<div class="proof-empty">No production logged today.</div>'}
+        <div class="proof-totals">
+          <div class="pt"><div class="pt-n">${fmtN(d.totGood)}</div><div class="pt-l">GOOD PCS</div></div>
+          <div class="pt"><div class="pt-n ${d.totRej > 0 ? 'rej' : ''}">${fmtN(d.totRej)}</div><div class="pt-l">REJECTED</div></div>
+          <div class="pt"><div class="pt-n">${d.totEntries}</div><div class="pt-l">ENTRIES</div></div>
+          <div class="pt"><div class="pt-n">${d.indexesToday}</div><div class="pt-l">INDEXES</div></div>
+          <div class="pt"><div class="pt-n">${d.insertChangesToday}</div><div class="pt-l">INSERTS</div></div>
+        </div>
+        <div class="proof-ft">
+          Generated ${esc(timeStr)} &middot; ${d.stationsUsed} station${d.stationsUsed === 1 ? '' : 's'}
+          <span class="proof-install">${esc((db.settings.installId || '').slice(0, 10))}</span>
+        </div>
+      </div>
+      <div class="proof-acts">
+        <button class="btn btn-pri" onclick="copyShiftSummary()">Copy Summary</button>
+        <button class="btn btn-ghost" onclick="printShiftProof()">Print / PDF</button>
+      </div>
+      <div class="proof-hint">Take a screenshot of the card above and send it on WhatsApp.</div>
+    </div>`;
+}
+
+function copyShiftSummary() {
+  const d = computeShiftData();
+  const now = new Date();
+  const range = d.minTs
+    ? `${d.minTs.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}-${d.maxTs.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+    : '';
+  const lines = [
+    `*PRODUCTION PROOF — ${db.settings.company || 'TOOLFLUX'}*`,
+    `${now.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' })}${range ? ' · ' + range : ''}`,
+    `Operator: ${d.operators.join(', ') || '—'} · Machine: ${d.machines.join(', ') || '—'}`,
+    '',
+    ...d.jobs.map(jb => {
+      const reasons = Object.entries(jb.reasons).map(([r, n]) => `${r}×${n}`).join(', ');
+      return `${jb.code} (${[...jb.opNames].join(',')}): ${jb.good} good${jb.rej ? `, ${jb.rej} rej (${reasons})` : ''}`;
+    }),
+    '',
+    `TOTAL: ${d.totGood} good · ${d.totRej} rejected · ${d.totEntries} entries`,
+    `Inserts: ${d.insertChangesToday} changed, ${d.indexesToday} corners indexed`,
+    d.sync === 'synced' ? 'Synced to cloud ✓' : d.sync === 'pending' ? 'Sync pending…' : d.sync === 'offline' ? 'Offline — sync queued' : 'Not synced yet',
+  ];
+  const text = lines.join('\n');
+  const done = () => toast('Summary copied — paste in WhatsApp', 'ok');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toast('Copy failed', 'bad'); }
+  ta.remove();
+}
+
+function printShiftProof() {
+  const el = $('#shift-proof');
+  if (!el) return;
+  $('#print-area').innerHTML = `<div class="report" style="max-width:420px;margin:0 auto">${el.outerHTML}</div>`;
+  window.print();
+}
+
 // ── calculations ─────────────────────────────────────────────────
 
 function calcStation(st) {
@@ -2097,7 +2342,9 @@ function vJobs() {
     const sel = filter === key ? 'aria-selected="true"' : '';
     return `<button class="tab" ${sel} onclick="setJobFilter('${key}')">${lbl}${count ? `<span class="n">${count}</span>` : ''}</button>`;
   }).join('');
-  setTabs((owner ? `<button class="tab" onclick="navigate('dash')">&#8962; Dashboard</button>` : '') + tabHtml + (owner
+  setTabs((owner ? `<button class="tab" onclick="navigate('dash')">&#8962; Dashboard</button>` : '') + tabHtml
+    + `<button class="tab" onclick="navigate('shift')">Shift Proof</button>`
+    + (owner
     ? `<button class="tab" onclick="navigate('inventory')">Inventory</button><button class="tab" onclick="navigate('settings')" style="margin-left:auto">Settings</button>`
     : ''));
   setBarCrumb('', false);
@@ -2459,6 +2706,7 @@ function vJobDetail() {
       </div>
       <div class="hero-acts">
         <button class="btn btn-teal btn-lg" onclick="toggleLogForm()">${ui.logOpen ? '&#10005; Close' : '+ Log Production'}</button>
+        <button class="btn btn-ghost" onclick="navigate('shift')">Shift Proof</button>
         ${owner ? `<button class="btn btn-ghost" onclick="navigate('report',{jobId:'${job.id}'})">Owner Report</button>` : ''}
       </div>
     </div>
@@ -2526,6 +2774,7 @@ function vJobDetail() {
       <div class="panel-hd">
         <span class="lbl">Production Log</span>
         <div class="hr"></div>
+        <button class="btn-icon-sm" onclick="navigate('shift')" title="Today's shift proof" style="font-size:.62rem;letter-spacing:.08em">SHIFT PROOF</button>
         <span class="lbl muted">${log.length} entr${log.length===1?'y':'ies'}</span>
       </div>
       ${logHtml}
@@ -3673,6 +3922,7 @@ function render() {
     else if (ui.view === 'settings')  html = vSettings();
     else if (ui.view === 'inventory') html = vInventory();
     else if (ui.view === 'dash')      html = vDashboard();
+    else if (ui.view === 'shift')     html = vShiftProof();
     else html = vJobs();
   } catch(e) {
     console.error('Render error', e);
@@ -4419,6 +4669,7 @@ Object.assign(window, {
   modeChipClick, openPinDialog, openPinSetup, closePinModal,
   submitPinUnlock, submitPinSetup, dismissPinSetup, openLogEdit, saveLogEdit,
   pickInventoryItem, quickIndexCorner,
+  copyShiftSummary, printShiftProof,
 });
 
 // ── init ──────────────────────────────────────────────────────────
