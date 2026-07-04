@@ -1281,16 +1281,100 @@ function addHistory(key, val) {
 }
 
 // ── license helpers ───────────────────────────────────────────────
+// ── license validation ────────────────────────────────────────────
+// Everything read from localStorage is untrusted until it passes shape,
+// format and plausibility checks. Server (GAS) remains the source of truth;
+// these checks only raise the bar against casual local tampering.
+
+const LAST_SEEN_KEY = 'toolflux.machlog.lastSeen';
+const MS_DAY = 86400000;
+
+// Monotonic clock anchor: expiry math uses max(now, lastSeen), so rolling
+// the device clock backwards gains nothing. A single write can never jump
+// more than 45 days forward, so an accidentally future-set clock cannot
+// poison the anchor permanently; successful server contact re-anchors it.
+function touchLastSeen() {
+  try {
+    const prev = parseInt(localStorage.getItem(LAST_SEEN_KEY) || '0', 10) || 0;
+    const next = Math.max(prev, Math.min(Date.now(), prev ? prev + 45 * MS_DAY : Date.now()));
+    localStorage.setItem(LAST_SEEN_KEY, String(next));
+  } catch (e) {}
+}
+function anchorLastSeen() { // called after confirmed server contact
+  try { localStorage.setItem(LAST_SEEN_KEY, String(Date.now())); } catch (e) {}
+}
+function effectiveNow() {
+  let seen = 0;
+  try { seen = parseInt(localStorage.getItem(LAST_SEEN_KEY) || '0', 10) || 0; } catch (e) {}
+  return Math.max(Date.now(), seen);
+}
+
+// Server tokens are always 'TF' + 64 uppercase hex chars (HMAC-SHA256)
+function isValidTokenFormat(t) { return typeof t === 'string' && /^TF[0-9A-F]{64}$/.test(t); }
+
+// A past-or-missing timestamp, parsed defensively; future values are never trusted
+function trustedPastTs(v) {
+  const t = Date.parse(v || '');
+  if (isNaN(t) || t > Date.now() + MS_DAY) return 0;
+  return t;
+}
+
+// Returns a validated license view, or null when the stored object is
+// missing, malformed, or carries impossible values. Never throws.
+function sanitizeLicense(lic) {
+  try {
+    if (!lic || typeof lic !== 'object' || Array.isArray(lic)) return null;
+    if (!isValidTokenFormat(lic.token)) return null;
+    const email = (typeof lic.email === 'string' && lic.email.includes('@')) ? lic.email
+      : (typeof db.settings.email === 'string' && db.settings.email.includes('@')) ? db.settings.email
+      : null;
+    if (!email) return null;
+    let expiresAt = null;
+    if (lic.expiresAt != null) {
+      expiresAt = Date.parse(lic.expiresAt);
+      if (isNaN(expiresAt)) return null;
+      // The server never issues an expiry more than ~35 days out; anything
+      // beyond 400 days is an impossible value, not a real license.
+      if (expiresAt > Date.now() + 400 * MS_DAY) return null;
+    }
+    return { token: lic.token, email, expiresAt, lastVerified: trustedPastTs(lic.lastVerified) };
+  } catch (e) { return null; }
+}
+
+// 'fresh' | 'overdue' | 'stale' — how recently the server confirmed this license
+function getVerificationState() {
+  const lic = sanitizeLicense(db.settings.license);
+  if (!lic) return null;
+  const days = lic.lastVerified ? (Date.now() - lic.lastVerified) / MS_DAY : 999;
+  return days < 7 ? 'fresh' : days < 30 ? 'overdue' : 'stale';
+}
+
 function getLicenseStatus() {
   const s = db.settings;
-  if (s.license && s.license.token) {
-    const expiry = s.license.expiresAt ? new Date(s.license.expiresAt) : null;
-    if (!expiry || expiry > new Date()) return 'licensed';
+  const now = effectiveNow();
+
+  const lic = sanitizeLicense(s.license);
+  if (lic) {
+    if (lic.expiresAt != null) {
+      if (lic.expiresAt > now) return 'licensed';
+      // expired — falls through to trial/paywall; online re-verification
+      // refreshes expiry automatically after renewal
+    } else {
+      // No expiry from server: require proof-of-life within 60 days
+      if (lic.lastVerified && now - lic.lastVerified < 60 * MS_DAY) return 'licensed';
+    }
   }
+
   if (s.trialStartedAt) {
-    const trialEnd = new Date(s.trialStartedAt);
-    trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
-    if (new Date() < trialEnd) return 'trial';
+    let ts = Date.parse(s.trialStartedAt);
+    // Corrupt or future start date: self-heal to now rather than lock a
+    // legitimate user (a wiped storage would grant a fresh trial anyway)
+    if (isNaN(ts) || ts > Date.now() + MS_DAY) {
+      s.trialStartedAt = new Date().toISOString();
+      ts = Date.now();
+      saveDB();
+    }
+    if (now < ts + TRIAL_DAYS * MS_DAY) return 'trial';
   }
   return 'expired';
 }
@@ -1298,9 +1382,9 @@ function getLicenseStatus() {
 function getTrialDaysLeft() {
   const s = db.settings;
   if (!s.trialStartedAt) return TRIAL_DAYS;
-  const trialEnd = new Date(s.trialStartedAt);
-  trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
-  return Math.max(0, Math.ceil((trialEnd - new Date()) / 86400000));
+  const ts = trustedPastTs(s.trialStartedAt);
+  if (!ts) return TRIAL_DAYS;
+  return Math.max(0, Math.ceil((ts + TRIAL_DAYS * MS_DAY - effectiveNow()) / MS_DAY));
 }
 
 function trialBanner() {
@@ -1712,6 +1796,7 @@ function computeDashData() {
   const att = out.attention;
   if (out.sync.state === 'failing') att.push({ sev: 'bad', msg: `Cloud backup failing — changes pending for ${pendingAgeMin > 120 ? Math.round(pendingAgeMin / 60) + ' h' : pendingAgeMin + ' min'}`, go: null });
   if (getLicenseStatus() === 'trial' && getTrialDaysLeft() <= 3) att.push({ sev: 'bad', msg: `Trial ends in ${getTrialDaysLeft()} day${getTrialDaysLeft() === 1 ? '' : 's'} — subscribe to keep tracking`, go: `navigate('paywall')` });
+  if (getLicenseStatus() === 'licensed' && getVerificationState() === 'stale') att.push({ sev: 'warn', msg: 'License not verified in 30+ days — connect to the internet once to re-verify', go: null });
   out.invAlerts.filter(a => a.kind === 'bad').slice(0, 2).forEach(a => att.push({ sev: 'bad', msg: `${a.label}: ${a.item}`, go: `navigate('inventory')` }));
   out.anomalyStations.slice(0, 3).forEach(s => att.push({ sev: 'bad', msg: `${s.code} · ${s.name} — abnormal insert failure${s.n > 1 ? 's (' + s.n + ')' : ''}`, go: `navigate('station',{jobId:'${s.jobId}',stationId:'${s.stationId}'})` }));
   out.jobRows.filter(r => r.status === 'paused').slice(0, 2).forEach(r => att.push({ sev: 'warn', msg: `${r.code} is paused`, go: `navigate('job',{jobId:'${r.jobId}'})` }));
@@ -3482,8 +3567,14 @@ function vPaywall() {
   setTabs('');
   setBarCrumb('', false);
   const expired = getLicenseStatus() === 'expired';
-  const title   = expired ? 'Your free trial has ended' : 'Subscribe to TOOLFLUX';
-  const subtext = expired
+  // A stored license that failed validation or lapsed: guide re-verification,
+  // never alarm. All app data stays intact — activation simply refreshes it.
+  const hadLicense = !!(db.settings.license && db.settings.license.token);
+  const title   = hadLicense ? 'License verification required'
+    : expired ? 'Your free trial has ended' : 'Subscribe to TOOLFLUX';
+  const subtext = hadLicense
+    ? 'Your license needs a quick re-verification. Enter your subscription email below — your data is untouched.'
+    : expired
     ? 'Activate a subscription to keep tracking your tooling costs and CPC.'
     : 'Unlock unlimited access. Your data stays on your device, always offline.';
   return `
@@ -4589,31 +4680,47 @@ document.addEventListener('keydown', e => {
 // Silently re-verifies the stored token against the server every 7 days.
 // On failure: if server says expired, clears the license and re-renders.
 // On network error: keeps existing token (offline grace period).
-function verifyLicenseIfNeeded() {
-  const lic = db.settings.license;
-  if (!lic || !lic.token) return;
-  const lastVerified = lic.lastVerified ? new Date(lic.lastVerified) : null;
-  const daysSince = lastVerified ? (Date.now() - lastVerified.getTime()) / 86400000 : 999;
-  if (daysSince < 7) return;
+function verifyLicenseIfNeeded(force) {
+  const raw = db.settings.license;
+  if (!raw || !raw.token) return;
 
-  const email = lic.email || db.settings.email || '';
-  if (!email) return;
+  const lic = sanitizeLicense(raw);
+  if (!lic) return; // malformed — status logic already treats it as unlicensed; paywall offers re-activation
 
-  const url = SYNC_URL + '?action=verify&email=' + encodeURIComponent(email) + '&token=' + encodeURIComponent(lic.token);
+  // lastVerified is untrusted: future or unparseable values mean "never verified"
+  const lastVerified = trustedPastTs(raw.lastVerified);
+  const daysSince = lastVerified ? (Date.now() - lastVerified) / MS_DAY : 999;
+  if (!force && daysSince < 3) return;
+
+  const url = SYNC_URL + '?action=verify&email=' + encodeURIComponent(lic.email) + '&token=' + encodeURIComponent(lic.token);
   fetch(url)
     .then(r => r.ok ? r.json() : null)
     .then(data => {
-      if (!data) return; // network or server error — keep current state
+      if (!data) return; // server unreachable/garbled — keep state, offline grace continues
       if (data.valid) {
-        db.settings.license.lastVerified = new Date().toISOString();
-        if (data.expiresAt) db.settings.license.expiresAt = data.expiresAt;
+        raw.lastVerified = new Date().toISOString();
+        raw.verifyFails = 0;
+        if (data.expiresAt) raw.expiresAt = data.expiresAt;
+        anchorLastSeen(); // confirmed server contact — re-anchor the clock guard
         saveDB();
       } else if (data.expired) {
         db.settings.license = null;
         saveDB();
         render();
+      } else {
+        // Server reached us and rejected the token (not a network issue).
+        // Tolerate transient server hiccups; three consecutive rejections
+        // means this token is simply not valid — require re-activation.
+        raw.verifyFails = (Number(raw.verifyFails) || 0) + 1;
+        if (raw.verifyFails >= 3) {
+          db.settings.license = null;
+          saveDB();
+          toast('License verification required — please re-activate with your email', 'warn');
+          render();
+        } else {
+          saveDB();
+        }
       }
-      // data.valid === false without expired flag: network/lookup issue — keep state
     })
     .catch(() => {}); // offline — no action, grace period continues
 }
@@ -4697,6 +4804,8 @@ setInterval(() => {
   const s = ownerSession();
   if (s && s.la && Date.now() - s.la > OWNER_TIMEOUT_MS) lockOwner();
 }, 30000);
+touchLastSeen(); // clock-rollback guard anchor
+setInterval(touchLastSeen, 10 * 60 * 1000);
 verifyLicenseIfNeeded(); // background, non-blocking
 updateClock();
 setInterval(updateClock, 30000);
