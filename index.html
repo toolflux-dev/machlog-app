@@ -596,6 +596,9 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .cpc-tbl .cpc-val { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--teal) }
 .cpc-tbl .insert-name { font-family: var(--mono); font-weight: 700; color: var(--navy) }
 
+/* ─── station mobile quick actions (phone-only; desktop keeps existing buttons) ─── */
+.st-mobile-acts { display: none }
+
 /* ─── owner dashboard ─── */
 .dash-2col { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .6rem }
 .dash-2col .panel { margin-bottom: 0 }
@@ -923,6 +926,39 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
   .paywall-title { font-size: 1.05rem }
   .paywall-sub { font-size: .77rem; margin-bottom: 1.1rem }
   .paywall-price { font-size: 1.35rem }
+
+  /* touch targets — newer components */
+  .tab { min-height: 44px }
+  .btn-icon-sm { min-width: 44px; min-height: 44px; font-size: 1rem }
+  .mode-chip { min-height: 44px; padding: .5rem .7rem }
+  .att-row { min-height: 44px; padding: .55rem 1rem }
+  .op-step { padding: .55rem .8rem; min-width: 92px }
+  .op-step-name { font-size: .88rem }
+  .inp { min-height: 44px; font-size: 1rem !important }
+  /* station panel-header buttons carry inline 28px sizing — override for thumbs */
+  .panel-hd .btn { min-height: 44px !important; font-size: .6rem !important; padding: .5rem .75rem !important }
+
+  /* station screen — big three actions (hidden on desktop) */
+  .st-mobile-acts { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; margin-bottom: .65rem }
+  .st-mobile-acts .btn { min-height: 54px; font-size: .68rem }
+  .st-mobile-acts .btn-teal { grid-column: 1 / -1 }
+
+  /* tables — smooth horizontal scroll, frozen first column, no font shrink */
+  .log-tbl-wrap, .inv-tbl-wrap { -webkit-overflow-scrolling: touch }
+  .inv-tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch }
+  .inv-tbl th, .inv-tbl td { white-space: nowrap }
+  .log-tbl th:first-child, .log-tbl td:first-child,
+  .dash-tbl th:first-child, .dash-tbl td:first-child {
+    position: sticky; left: 0; background: var(--W); z-index: 1;
+  }
+  .dash-tbl tbody tr:hover td:first-child { background: var(--off) }
+  .dash-tbl td { padding: .6rem .6rem }
+  .dash-tbl tbody tr { min-height: 44px }
+
+  /* button spacing — roomier gaps between adjacent actions */
+  .hero-acts { gap: .55rem }
+  .jc-acts { gap: .55rem }
+  .pin-acts { gap: .7rem }
 }
 
 @media (max-width: 390px) {
@@ -2519,7 +2555,7 @@ function buildLogForm(job) {
         <div class="fgrid" style="grid-template-columns:1fr 2fr;gap:.5rem">
           <div class="field" style="margin:0">
             <label>Rejected Qty</label>
-            <input id="lp-rej-qty" type="number" min="0" max="9999" class="inp" placeholder="0">
+            <input id="lp-rej-qty" type="number" inputmode="numeric" min="0" max="9999" class="inp" placeholder="0">
           </div>
           <div class="field" style="margin:0">
             <label>Reason</label>
@@ -2597,7 +2633,7 @@ function buildLogForm(job) {
             <div class="field">
               <label>Qty Produced <span class="req">*</span></label>
               <div class="qty-row" style="flex-wrap:nowrap;gap:.3rem;margin-bottom:0">
-                <input id="lp-qty" type="number" min="1" max="9999" class="qty-inp" placeholder="0" required autofocus>
+                <input id="lp-qty" type="number" inputmode="numeric" min="1" max="9999" class="qty-inp" placeholder="0" required autofocus>
                 <div style="display:flex;flex-direction:column;gap:.22rem">
                   <button type="button" class="qty-adj" onclick="adjQty(5)">+5</button>
                   <button type="button" class="qty-adj" onclick="adjQty(10)">+10</button>
@@ -2689,7 +2725,7 @@ function buildStationFields(opType, ex) {
       </div>
       <div class="field">
         <label for="sf-cost">Cost per Tool (&#8377;) <span class="req">*</span></label>
-        <input id="sf-cost" type="number" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00">
+        <input id="sf-cost" type="number" inputmode="decimal" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00">
         <div class="hint">Price of one ${isTap ? 'tap' : 'drill'}</div>
       </div>`;
   }
@@ -2713,17 +2749,17 @@ function buildStationFields(opType, ex) {
       </div>
       <div class="field">
         <label for="sf-qty">Inserts in Cutter</label>
-        <input id="sf-qty" type="number" min="1" max="32" ${inp('insertsInCutter',1)} oninput="updateSetCostHint()">
+        <input id="sf-qty" type="number" inputmode="numeric" min="1" max="32" ${inp('insertsInCutter',1)} oninput="updateSetCostHint()">
         <div class="hint">How many inserts the cutter body holds</div>
       </div>
       <div class="field">
         <label for="sf-corners">Corners per Insert</label>
-        <input id="sf-corners" type="number" min="1" max="16" ${inp('cuttingCornersPerInsert',4)} oninput="updateSetCostHint()">
+        <input id="sf-corners" type="number" inputmode="numeric" min="1" max="16" ${inp('cuttingCornersPerInsert',4)} oninput="updateSetCostHint()">
         <div class="hint">Indexable edges before this insert is scrapped</div>
       </div>
       <div class="field">
         <label for="sf-cost">Cost per Insert (&#8377;) <span class="req">*</span></label>
-        <input id="sf-cost" type="number" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00" oninput="updateSetCostHint()">
+        <input id="sf-cost" type="number" inputmode="decimal" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00" oninput="updateSetCostHint()">
         <div class="hint" id="sf-cost-hint">${esc(hint)}</div>
       </div>`;
   }
@@ -2745,12 +2781,12 @@ function buildStationFields(opType, ex) {
     </div>
     <div class="field">
       <label for="sf-cost">Cost per Insert (&#8377;) <span class="req">*</span></label>
-      <input id="sf-cost" type="number" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00">
+      <input id="sf-cost" type="number" inputmode="decimal" min="0" step="0.01" ${inp('insertCostPer','')} placeholder="0.00">
       <div class="hint">Price of one insert (1 insert per tool for turning)</div>
     </div>
     <div class="field">
       <label for="sf-corners">Corners per Insert</label>
-      <input id="sf-corners" type="number" min="1" max="16" ${inp('cuttingCornersPerInsert',4)}>
+      <input id="sf-corners" type="number" inputmode="numeric" min="1" max="16" ${inp('cuttingCornersPerInsert',4)}>
       <div class="hint">Indexable edges before this insert is scrapped</div>
     </div>`;
 }
@@ -2978,6 +3014,13 @@ function vStationDetail() {
 
   return `
     ${statusBanner}
+    <div class="st-mobile-acts">
+      ${sc.activeSet && !solid ? `<button class="btn btn-pri" onclick="quickIndexCorner('${job.id}','${st.id}')">&#8635; Index Corner</button>` : ''}
+      ${sc.activeSet
+        ? `<button class="btn btn-ghost" onclick="loadNewSet('${job.id}','${st.id}')">${solid ? 'Replace Tool' : 'Replace Inserts'}</button>`
+        : `<button class="btn btn-pri" onclick="loadFirstSet('${job.id}','${st.id}')">${solid ? 'Load Tool' : 'Load Inserts'}</button>`}
+      <button class="btn btn-teal" onclick="quickLog('${job.id}')">+ Log Production</button>
+    </div>
     <div class="panel" style="margin-bottom:.8rem">
       <div class="panel-hd">
         ${opBadge(st.opType)}
@@ -3402,11 +3445,11 @@ function buildInvAddForm() {
           </div>
           <div class="field" style="margin:0">
             <label>Unit Price (₹)</label>
-            <input id="inv-price" type="number" min="0" step="0.01" placeholder="0">
+            <input id="inv-price" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0">
           </div>
           <div class="field" style="margin:0">
             <label>Qty in Stock</label>
-            <input id="inv-qty" type="number" min="0" placeholder="0">
+            <input id="inv-qty" type="number" inputmode="numeric" min="0" placeholder="0">
           </div>
         </div>
         <button type="submit" class="btn btn-pri">Add to Inventory</button>
@@ -3647,7 +3690,15 @@ function render() {
 
 // ── event handlers ─────────────────────────────────────────────────
 function setJobFilter(f) { if (f === 'cpc' && !requireOwner()) return; ui.tab = f; render(); }
-function toggleLogForm()    { ui.logOpen = !ui.logOpen; render(); }
+function toggleLogForm()    { ui.logOpen = !ui.logOpen; render(); if (ui.logOpen) focusQtyMobile(); }
+
+// On phones, land the cursor in the qty field the moment the form opens —
+// the numeric keypad comes up and the operator types immediately. Desktop
+// focus behavior is untouched.
+function focusQtyMobile() {
+  if (window.innerWidth > 640) return;
+  setTimeout(() => { const q = document.getElementById('lp-qty'); if (q) q.focus(); }, 80);
+}
 function toggleAddStation() { if (!requireOwner()) return; ui.addStationOpen = !ui.addStationOpen; render(); }
 
 function adjQty(n) {
@@ -3864,7 +3915,7 @@ function openLogEdit(jobId, entryId) {
       <form onsubmit="saveLogEdit(event,'${jobId}','${entryId}')">
         <div class="form-row">
           <label class="lbl">Qty</label>
-          <input class="inp" type="number" id="le-qty" value="${entry.qty}" min="0" required>
+          <input class="inp" type="number" inputmode="numeric" id="le-qty" value="${entry.qty}" min="0" required>
         </div>
         <div class="form-row">
           <label class="lbl">Operator</label>
@@ -3876,7 +3927,7 @@ function openLogEdit(jobId, entryId) {
         </div>
         <div class="form-row">
           <label class="lbl">Cycle Time (min)</label>
-          <input class="inp" type="number" id="le-cycle" value="${entry.cycleTimeMins || ''}" min="0" step="0.1">
+          <input class="inp" type="number" inputmode="decimal" id="le-cycle" value="${entry.cycleTimeMins || ''}" min="0" step="0.1">
         </div>
         <div class="form-row">
           <label class="lbl">Notes</label>
@@ -4030,6 +4081,22 @@ function loadNewSet(jobId, stationId) {
   saveDB();
   syncNow(); // audit: insert replacement reaches the sheet immediately
   toast(solid ? 'New tool loaded' : 'New insert set loaded', 'ok');
+  render();
+}
+
+// One-tap corner index from the station screen — reuses the exact event
+// processing the log-production tooling section uses.
+function quickIndexCorner(jobId, stationId) {
+  const job = db.jobs.find(j => j.id === jobId);
+  const st = job && jobAllStations(job).find(s => s.id === stationId);
+  if (!st) return;
+  const sc = calcStation(st);
+  if (!sc.activeSet) { toast('No active insert set', 'bad'); return; }
+  if (!confirm(`Index corner on ${st.name}? Current corner closes at ${fmtN(sc.currentCornerPcs)} pcs.`)) return;
+  processStationEvent(st, { stationId: st.id, eventType: 'corner_index', timestamp: isoNow() });
+  saveDB();
+  syncNow(); // audit: same immediate-sync path as other insert events
+  toast('Corner indexed', 'ok');
   render();
 }
 
@@ -4239,6 +4306,7 @@ function toggleRejectionSection(cb) {
 
 function quickLog(jobId) {
   navigate('job', { jobId, logOpen: true });
+  focusQtyMobile();
 }
 
 function confirmClearAll() {
@@ -4350,7 +4418,7 @@ Object.assign(window, {
   submitAddInventory, deleteInventoryItem, importInvPaste,
   modeChipClick, openPinDialog, openPinSetup, closePinModal,
   submitPinUnlock, submitPinSetup, dismissPinSetup, openLogEdit, saveLogEdit,
-  pickInventoryItem,
+  pickInventoryItem, quickIndexCorner,
 });
 
 // ── init ──────────────────────────────────────────────────────────
@@ -4363,6 +4431,16 @@ render();
 // a background check locks the UI once it lapses.
 ['click', 'keydown', 'touchstart'].forEach(ev =>
   document.addEventListener(ev, touchOwnerActivity, { passive: true }));
+
+// Phones: keep the focused field visible above the on-screen keyboard.
+// Desktop is excluded — no scroll behavior changes there.
+document.addEventListener('focusin', e => {
+  if (window.innerWidth > 640) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) {
+    setTimeout(() => { try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {} }, 250);
+  }
+});
 setInterval(() => {
   if (!hasOwnerPin()) return;
   const s = ownerSession();
