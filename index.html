@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#012B42">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>TOOLFLUX — Machining Log</title>
 <style>
 /* ═══════════════════════════════════════════════
@@ -691,6 +694,24 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .trend-bar { width: 100%; background: var(--teal); border-radius: 1px 1px 0 0; position: relative; overflow: hidden }
 .trend-bar-rej { position: absolute; top: 0; left: 0; right: 0; background: var(--bad) }
 .trend-lbl { font-size: .56rem; font-weight: 700; letter-spacing: .08em; color: var(--mut); text-transform: uppercase; margin-top: .25rem }
+
+/* ─── install nudge & sharing ─── */
+.install-nudge {
+  position: fixed; left: .6rem; right: .6rem; bottom: .6rem; z-index: 1050;
+  background: var(--navy); color: #fff;
+  border-radius: 4px; box-shadow: 0 6px 28px rgba(1,20,30,.35);
+  display: flex; align-items: center; gap: .7rem;
+  padding: .7rem .9rem;
+  max-width: 520px; margin: 0 auto;
+}
+.install-nudge .in-txt { flex: 1; min-width: 0 }
+.install-nudge .in-txt b { display: block; font-size: .8rem; letter-spacing: .02em }
+.install-nudge .in-txt span { display: block; font-size: .68rem; color: rgba(255,255,255,.72); line-height: 1.4 }
+.install-nudge .btn { min-height: 40px; padding: .5rem .9rem }
+.install-nudge .in-x { background: none; border: 0; color: rgba(255,255,255,.6); font-size: 1rem; padding: .4rem; min-width: 36px; min-height: 36px }
+.install-nudge .in-x:hover { color: #fff }
+.btn-wa { background: #1da851; color: #fff; border-color: #1da851 }
+.btn-wa:hover { background: #168f43; border-color: #168f43 }
 
 /* ─── owner / operator mode ─── */
 .mode-chip {
@@ -1631,7 +1652,7 @@ function syncModeChip() {
   el.style.display = '';
   const owner = isOwner();
   el.className = 'mode-chip ' + (owner ? 'owner' : 'operator');
-  el.textContent = owner ? 'OWNER MODE' : 'OPERATOR';
+  el.textContent = owner ? '\u{1F513} OWNER MODE' : '\u{1F512} OPERATOR';
   el.title = owner ? 'Tap to lock into Operator Mode' : 'Tap to unlock Owner Mode';
 }
 
@@ -2120,14 +2141,15 @@ function vShiftProof() {
         </div>
       </div>
       <div class="proof-acts">
-        <button class="btn btn-pri" onclick="copyShiftSummary()">Copy Summary</button>
+        <button class="btn btn-wa" onclick="whatsappShiftSummary()">&#9993; Send on WhatsApp</button>
+        <button class="btn btn-ghost" onclick="copyShiftSummary()">Copy</button>
         <button class="btn btn-ghost" onclick="printShiftProof()">Print / PDF</button>
       </div>
-      <div class="proof-hint">Take a screenshot of the card above and send it on WhatsApp.</div>
+      <div class="proof-hint">Or take a screenshot of the card above and send the picture.</div>
     </div>`;
 }
 
-function copyShiftSummary() {
+function buildShiftSummaryText() {
   const d = computeShiftData();
   const now = new Date();
   const range = d.minTs
@@ -2147,7 +2169,18 @@ function copyShiftSummary() {
     `Inserts: ${d.insertChangesToday} changed, ${d.indexesToday} corners indexed`,
     d.sync === 'synced' ? 'Synced to cloud ✓' : d.sync === 'pending' ? 'Sync pending…' : d.sync === 'offline' ? 'Offline — sync queued' : 'Not synced yet',
   ];
-  const text = lines.join('\n');
+  return lines.join('\n');
+}
+
+// Opens WhatsApp directly with the summary pre-typed — the one share
+// path every customer already knows how to finish.
+function whatsappShiftSummary() {
+  const text = buildShiftSummaryText();
+  window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+}
+
+function copyShiftSummary() {
+  const text = buildShiftSummaryText();
   const done = () => toast('Summary copied — paste in WhatsApp', 'ok');
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
@@ -4495,13 +4528,36 @@ function printReport() {
   window.print();
 }
 
+// On phones, downloads land in a folder most shop owners never open.
+// Offer the OS share sheet (WhatsApp, Gmail, Drive…) first; fall back to a
+// normal download. Desktop always downloads exactly as before.
+function shareOrDownload(blob, filename, doneMsg) {
+  if (window.innerWidth <= 860 && navigator.canShare && navigator.share) {
+    try {
+      const file = new File([blob], filename, { type: blob.type });
+      if (navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: filename })
+          .then(() => toast('Shared', 'ok'))
+          .catch(err => { if (err && err.name !== 'AbortError') downloadBlob(blob, filename, doneMsg); });
+        return;
+      }
+    } catch (e) { /* fall through to download */ }
+  }
+  downloadBlob(blob, filename, doneMsg);
+}
+
+function downloadBlob(blob, filename, doneMsg) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  if (doneMsg) toast(doneMsg, 'ok');
+}
+
 function exportData() {
   if (!requireOwner()) return;
   const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `machlog-backup-${new Date().toISOString().slice(0,10)}.json`;
-  a.click();
+  shareOrDownload(blob, `machlog-backup-${new Date().toISOString().slice(0,10)}.json`, 'Backup saved');
 }
 
 function exportToExcel() {
@@ -4603,11 +4659,7 @@ function exportToExcel() {
   const wb = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">${styles}${s1}${s2}${s3}${s4}</Workbook>`;
 
   const blob = new Blob(['﻿' + wb], { type: 'application/vnd.ms-excel;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `machlog-data-${new Date().toISOString().slice(0,10)}.xls`;
-  a.click();
-  toast('Excel file downloaded', 'ok');
+  shareOrDownload(blob, `machlog-data-${new Date().toISOString().slice(0,10)}.xls`, 'Excel file ready');
 }
 
 function importData() {
@@ -4776,7 +4828,8 @@ Object.assign(window, {
   modeChipClick, openPinDialog, openPinSetup, closePinModal,
   submitPinUnlock, submitPinSetup, dismissPinSetup, openLogEdit, saveLogEdit,
   pickInventoryItem, quickIndexCorner,
-  copyShiftSummary, printShiftProof,
+  copyShiftSummary, printShiftProof, whatsappShiftSummary,
+  installApp, dismissNudge,
 });
 
 // ── init ──────────────────────────────────────────────────────────
@@ -4804,6 +4857,67 @@ setInterval(() => {
   const s = ownerSession();
   if (s && s.la && Date.now() - s.la > OWNER_TIMEOUT_MS) lockOwner();
 }, 30000);
+// ── install & distribution ───────────────────────────────────────
+// PWA install prompt, home-screen nudge, and in-app-browser guard.
+// All additive: no effect on file:// copies or desktop workflows.
+const NUDGE_KEY = 'toolflux.machlog.installNudge';
+
+function isStandalone() {
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+}
+function nudgeDismissed() { try { return !!localStorage.getItem(NUDGE_KEY); } catch (e) { return true; } }
+function dismissNudge() {
+  try { localStorage.setItem(NUDGE_KEY, '1'); } catch (e) {}
+  const el = document.getElementById('install-nudge');
+  if (el) el.remove();
+}
+
+// Service worker gives true offline start + the browser install prompt
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) {}
+}
+
+let deferredInstall = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstall = e;
+  showInstallNudge('android');
+});
+
+function showInstallNudge(kind) {
+  if (isStandalone() || nudgeDismissed() || document.getElementById('install-nudge')) return;
+  const card = document.createElement('div');
+  card.id = 'install-nudge';
+  card.className = 'install-nudge';
+  card.innerHTML = kind === 'android'
+    ? `<div class="in-txt"><b>Put TOOLFLUX on your phone</b><span>One tap — opens like an app, works without internet</span></div>
+       <button class="btn btn-pri" onclick="installApp()">Install</button>
+       <button class="in-x" onclick="dismissNudge()" aria-label="Dismiss">&#10005;</button>`
+    : kind === 'ios'
+    ? `<div class="in-txt"><b>Put TOOLFLUX on your phone</b><span>Tap the Share button <span style="font-size:1rem">&#8963;</span> then &ldquo;Add to Home Screen&rdquo;</span></div>
+       <button class="in-x" onclick="dismissNudge()" aria-label="Dismiss">&#10005;</button>`
+    : `<div class="in-txt"><b>Open in Chrome for safe storage</b><span>This chat browser may not keep your data. Tap &#8942; and choose &ldquo;Open in Chrome / browser&rdquo;.</span></div>
+       <button class="in-x" onclick="dismissNudge()" aria-label="Dismiss">&#10005;</button>`;
+  document.body.appendChild(card);
+}
+
+function installApp() {
+  if (!deferredInstall) { dismissNudge(); return; }
+  deferredInstall.prompt();
+  deferredInstall.userChoice.then(() => { deferredInstall = null; dismissNudge(); });
+}
+
+// In-app browsers (WhatsApp/Facebook/Instagram webviews) can silo storage —
+// steer the user to a real browser before they build up data there.
+(function detectBrowserContext() {
+  const ua = navigator.userAgent || '';
+  const inApp = /; wv\)/.test(ua) || /FBAN|FBAV|Instagram|Line\//i.test(ua);
+  const iOS = /iPhone|iPad|iPod/.test(ua) && !window.MSStream;
+  if (inApp) setTimeout(() => showInstallNudge('inapp'), 1500);
+  else if (iOS && !isStandalone()) setTimeout(() => showInstallNudge('ios'), 2500);
+  // Android Chrome case is handled by beforeinstallprompt above
+})();
+
 touchLastSeen(); // clock-rollback guard anchor
 setInterval(touchLastSeen, 10 * 60 * 1000);
 verifyLicenseIfNeeded(); // background, non-blocking
