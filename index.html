@@ -4475,7 +4475,10 @@ function submitLogProduction(e, jobId) {
   e.preventDefault();
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
-  const qty = parseInt($('#lp-qty').value) || 0;
+  // The qty input's max="9999" is a UI hint only — a value set programmatically
+  // or pasted can exceed it, so re-clamp here (a stray extra digit shouldn't be
+  // able to distort CPC and dashboard totals with no correction path).
+  const qty = Math.min(9999, Math.max(0, parseInt($('#lp-qty').value) || 0));
   if (qty < 1) { toast('Enter a quantity', 'bad'); return; }
 
   const opId = (($('#lp-opsel') || {}).value) || (job.operations && job.operations[0] && job.operations[0].id) || null;
@@ -4484,8 +4487,11 @@ function submitLogProduction(e, jobId) {
   const cycleTimeMins = parseFloat((($('#lp-ct') || {}).value) || 0) || 0;
   const notes = (($('#lp-notes') || {}).value || '').trim();
 
-  // Rejections
-  const rejQty = parseInt((($('#lp-rej-qty') || {}).value) || 0) || 0;
+  // Rejections — can never exceed the quantity just logged; a mistaken entry
+  // like "999 rejected" on a 20-piece batch would otherwise show a nonsensical
+  // rejection count on the dashboard and shift proof.
+  const rejQtyRaw = parseInt((($('#lp-rej-qty') || {}).value) || 0) || 0;
+  const rejQty = Math.min(qty, Math.max(0, rejQtyRaw));
   const rejReason = (($('#lp-rej-reason') || {}).value) || '';
   const rejections = (rejQty > 0 && rejReason) ? [{ qty: rejQty, reason: rejReason }] : [];
   const qtyGood = Math.max(0, qty - rejQty);
@@ -4585,7 +4591,7 @@ function saveLogEdit(e, jobId, entryId) {
   const entry = (job.productionLog || []).find(en => en.id === entryId);
   if (!entry) return;
 
-  const newQty = Math.max(0, parseInt(document.getElementById('le-qty').value) || 0);
+  const newQty = Math.min(9999, Math.max(0, parseInt(document.getElementById('le-qty').value) || 0));
   const diff = newQty - (entry.qty || 0);
 
   if (diff !== 0) {
@@ -4824,7 +4830,11 @@ function exportToExcel() {
   if (!requireOwner()) return;
   // SpreadsheetML — no library, works offline, opens in Excel & LibreOffice
   const xe = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const sc = (v, t='String') => `<Cell><Data ss:Type="${t}">${xe(v)}</Data></Cell>`;
+  // Explicit ss:Type="String" already tells Excel to treat these as literal
+  // text, not formulas — but a leading =/+/-/@ has caused real-world CSV
+  // injection incidents in other apps' exports, so neutralize it anyway.
+  const noFormula = s => /^[=+\-@]/.test(s) ? "'" + s : s;
+  const sc = (v, t='String') => `<Cell><Data ss:Type="${t}">${xe(t === 'String' ? noFormula(String(v ?? '')) : v)}</Data></Cell>`;
   const nc = v => (v != null && !isNaN(v)) ? sc(Number(v).toFixed(4),'Number') : sc('');
   const hc = v => `<Cell ss:StyleID="h"><Data ss:Type="String">${xe(v)}</Data></Cell>`;
   const hr = (...vs) => '<Row>' + vs.map(hc).join('') + '</Row>';
