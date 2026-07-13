@@ -695,6 +695,48 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 .trend-bar-rej { position: absolute; top: 0; left: 0; right: 0; background: var(--bad) }
 .trend-lbl { font-size: .56rem; font-weight: 700; letter-spacing: .08em; color: var(--mut); text-transform: uppercase; margin-top: .25rem }
 
+/* ─── onboarding tutorial ─── */
+.tut-overlay {
+  position: fixed; inset: 0;
+  background: rgba(1, 20, 30, .6);
+  z-index: 1200;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem;
+}
+.tut-card {
+  background: var(--W);
+  border-radius: 6px;
+  width: 100%; max-width: 400px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  border-top: 4px solid var(--teal);
+  overflow: hidden;
+}
+.tut-top { display: flex; align-items: center; justify-content: space-between; padding: .7rem .9rem .3rem }
+.tut-step-n { font-family: var(--mono); font-size: .65rem; font-weight: 700; color: var(--mut); letter-spacing: .06em }
+.tut-skip { background: none; border: 0; color: var(--mut); font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: .5rem .3rem; cursor: pointer; min-height: 44px }
+.tut-skip:hover { color: var(--navy) }
+.tut-tap { padding: .5rem 1.6rem 1.3rem; text-align: center; cursor: pointer; user-select: none }
+.tut-icon { font-size: 2.4rem; line-height: 1; margin-bottom: .8rem }
+.tut-title { font-size: 1.05rem; font-weight: 800; color: var(--navy); margin-bottom: .55rem; letter-spacing: -.01em }
+.tut-body { font-size: .86rem; color: var(--T); line-height: 1.55; max-width: 32ch; margin: 0 auto }
+.tut-dots { display: flex; justify-content: center; gap: .35rem; padding-bottom: .9rem }
+.tut-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--rule2) }
+.tut-dot.on { background: var(--teal); width: 16px; border-radius: 3px }
+.tut-nav { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--rule); padding: .5rem .5rem }
+.tut-hint { font-size: .62rem; color: var(--mut); letter-spacing: .04em }
+.tut-arrow {
+  background: var(--off); border: 1px solid var(--rule2); color: var(--navy);
+  width: 44px; height: 44px; border-radius: 50%;
+  font-size: 1.1rem; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.tut-arrow:hover { background: var(--off2) }
+.tut-arrow-next { background: var(--teal); border-color: var(--teal); color: #fff }
+.tut-arrow-next:hover { background: var(--teal-d) }
+@media (max-width: 460px) {
+  .tut-hint { display: none }
+}
+
 /* ─── install nudge & sharing ─── */
 .install-nudge {
   position: fixed; left: .6rem; right: .6rem; bottom: .6rem; z-index: 1050;
@@ -1643,6 +1685,7 @@ function dismissPinSetup() {
   saveDB();
   closePinModal();
   toast('You can set the PIN later in Settings');
+  render(); // re-evaluate render()'s onboarding chain now that PIN prompt is resolved
 }
 
 function syncModeChip() {
@@ -2200,6 +2243,92 @@ function printShiftProof() {
   if (!el) return;
   $('#print-area').innerHTML = `<div class="report" style="max-width:420px;margin:0 auto">${el.outerHTML}</div>`;
   window.print();
+}
+
+// ── onboarding tutorial ────────────────────────────────────────────
+// Tap-anywhere-to-advance overlay. Owner-only steps are filtered out for
+// operators viewing an un-unlocked device; Settings replay always shows
+// the full track since only owners reach Settings.
+const TUT_STEPS = [
+  { icon: '\u{1F527}', title: 'Welcome to TOOLFLUX', body: 'This app replaces the paper sheet taped to your machine. It takes one minute to see what it does — tap anywhere to continue, or use the arrow.' },
+  { icon: '➕', title: 'Log every shift in seconds', body: 'Open a job, tap "Log Shift", type how many pieces you made, tap Log Production. Operator and machine are remembered for next time.' },
+  { icon: '\u{1F504}', title: 'Track every insert corner', body: 'When you rotate or replace an insert, tap Index Corner or Replace Inserts on the station screen. The app remembers exactly how long each edge lasted.' },
+  { icon: '⚠', title: 'Record rejections honestly', body: 'Tick "Any rejections?" in the log form and pick a reason. This protects you and shows real quality trends over time.' },
+  { icon: '\u{1F4F2}', title: 'Prove your shift on WhatsApp', body: 'At the end of the day, open Shift Proof and tap "Send on WhatsApp". The owner sees exactly what was made — instantly, with proof it reached the cloud.' },
+  { icon: '\u{1F512}', title: 'Owner Mode keeps costs private', owner: true, body: 'Tap the lock chip in the top bar and enter your PIN anytime to see costs, reports and settings. Operators on the shop floor never see this.' },
+  { icon: '₹', title: 'Know your real tooling cost', owner: true, body: 'CPC = insert cost ÷ pieces made. No more guessing — see exactly what each component costs you, insert by insert.' },
+  { icon: '\u{1F4CA}', title: 'One screen, whole business', owner: true, body: 'Unlock Owner Mode and you land on the Dashboard. "Attention Required" always shows first — paused jobs, low stock, insert problems — the moment you open the app.' },
+  { icon: '\u{1F4E6}', title: 'Stock that updates itself', owner: true, body: 'Add your inserts once in Inventory. Every load deducts stock automatically and warns you before you run out.' },
+  { icon: '☁', title: 'Your data is always safe', body: 'Everything syncs to the cloud the moment you have internet. Offline? It queues and sends automatically the second you are back online.' },
+  { icon: '✅', title: "You're ready", body: 'Replay this tour anytime from Settings. Now go make some good parts.' },
+];
+
+let tutStepList = [];
+let tutIndex = 0;
+
+function startTutorial(auto) {
+  if (document.getElementById('tut-overlay')) return;
+  tutStepList = auto ? TUT_STEPS.filter(s => !s.owner || isOwner()) : TUT_STEPS;
+  tutIndex = 0;
+  renderTutorialStep();
+}
+
+function renderTutorialStep() {
+  const existing = document.getElementById('tut-overlay');
+  if (existing) existing.remove();
+  const step = tutStepList[tutIndex];
+  if (!step) { finishTutorial(); return; }
+  const isLast = tutIndex === tutStepList.length - 1;
+  const isFirst = tutIndex === 0;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'tut-overlay';
+  overlay.className = 'tut-overlay';
+  overlay.innerHTML = `
+    <div class="tut-card">
+      <div class="tut-top">
+        <span class="tut-step-n">${tutIndex + 1} / ${tutStepList.length}</span>
+        <button class="tut-skip" onclick="event.stopPropagation();skipTutorial()">Skip</button>
+      </div>
+      <div class="tut-tap" onclick="tutNext()">
+        <div class="tut-icon">${step.icon}</div>
+        <div class="tut-title">${esc(step.title)}</div>
+        <div class="tut-body">${esc(step.body)}</div>
+      </div>
+      <div class="tut-dots">
+        ${tutStepList.map((_, i) => `<span class="tut-dot${i === tutIndex ? ' on' : ''}"></span>`).join('')}
+      </div>
+      <div class="tut-nav">
+        <button class="tut-arrow" style="visibility:${isFirst ? 'hidden' : 'visible'}" onclick="event.stopPropagation();tutPrev()" aria-label="Back">&#8592;</button>
+        <span class="tut-hint">Tap card to continue</span>
+        <button class="tut-arrow tut-arrow-next" onclick="event.stopPropagation();tutNext()" aria-label="Next">${isLast ? '&#10003;' : '&#8594;'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function tutNext() {
+  if (tutIndex >= tutStepList.length - 1) { finishTutorial(); return; }
+  tutIndex++;
+  renderTutorialStep();
+}
+function tutPrev() {
+  if (tutIndex <= 0) return;
+  tutIndex--;
+  renderTutorialStep();
+}
+function skipTutorial() { finishTutorial(); }
+
+function finishTutorial() {
+  const el = document.getElementById('tut-overlay');
+  if (el) el.remove();
+  db.settings.tutorialSeen = true;
+  saveDB();
+}
+
+function replayTutorial() {
+  db.settings.tutorialSeen = false; // so an interrupted replay still resumes on next open
+  startTutorial(false);
 }
 
 // ── calculations ─────────────────────────────────────────────────
@@ -3972,6 +4101,13 @@ function vSettings() {
       </div>
     </div>
     <div class="panel">
+      <div class="panel-hd"><span class="lbl">Help</span><div class="hr"></div></div>
+      <div class="panel-bd">
+        <div style="font-size:.75rem;color:var(--mut);margin-bottom:.65rem;line-height:1.55">A short walkthrough of jobs, insert tracking, CPC, the dashboard and shift proof.</div>
+        <button class="btn btn-ghost" onclick="replayTutorial()">&#9654; Replay Tutorial</button>
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-hd"><span class="lbl">Data Export</span><div class="hr"></div></div>
       <div class="panel-bd">
         <div style="display:flex;gap:.7rem;flex-wrap:wrap;margin-bottom:.65rem">
@@ -4055,9 +4191,18 @@ function render() {
   view.innerHTML = html;
   syncModeChip();
   // One-time migration prompt: existing installs get asked to create their PIN
-  if (ui.view !== 'setup' && db.settings.company && !hasOwnerPin()
-      && !db.settings.pinPromptShown && !document.getElementById('pin-modal')) {
+  const needsPinPrompt = ui.view !== 'setup' && db.settings.company && !hasOwnerPin() && !db.settings.pinPromptShown;
+  if (needsPinPrompt && !document.getElementById('pin-modal')) {
     setTimeout(() => openPinSetup(true), 400);
+  } else if (ui.view !== 'setup' && db.settings.company && !db.settings.tutorialSeen
+      && !document.getElementById('pin-modal') && !document.getElementById('tut-overlay') && !window.__tutScheduled) {
+    // First-run (or first-open-after-update) walkthrough — waits for the PIN
+    // flow to resolve first so the two overlays never stack.
+    window.__tutScheduled = true;
+    setTimeout(() => {
+      window.__tutScheduled = false;
+      if (!document.getElementById('pin-modal')) startTutorial(true);
+    }, 500);
   }
   setTimeout(buildDataLists, 0);
 }
@@ -4830,6 +4975,7 @@ Object.assign(window, {
   pickInventoryItem, quickIndexCorner,
   copyShiftSummary, printShiftProof, whatsappShiftSummary,
   installApp, dismissNudge,
+  startTutorial, tutNext, tutPrev, skipTutorial, replayTutorial,
 });
 
 // ── init ──────────────────────────────────────────────────────────
