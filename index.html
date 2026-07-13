@@ -649,6 +649,47 @@ table.rt { width: 100%; border-collapse: collapse; margin-bottom: 1mm }
 /* ─── station mobile quick actions (phone-only; desktop keeps existing buttons) ─── */
 .st-mobile-acts { display: none }
 
+/* ─── operator performance ─── */
+.perf-hero {
+  display: flex; align-items: center; gap: .75rem;
+  margin: .7rem 1rem .3rem;
+  background: var(--teal-tint); border: 1px solid var(--teal);
+  border-radius: var(--r); padding: .65rem .9rem;
+}
+.perf-hero-crown { font-size: 1.5rem; line-height: 1 }
+.perf-hero-lbl { font-size: .58rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--teal-d) }
+.perf-hero-name { font-size: 1.05rem; font-weight: 800; color: var(--navy); margin: .12rem 0 .1rem }
+.perf-hero-stat { font-size: .74rem; color: var(--T) }
+.perf-list { padding: .3rem 0 }
+.perf-row { display: flex; align-items: center; gap: .6rem; padding: .4rem 1rem; border-bottom: 1px solid var(--off2) }
+.perf-list .perf-row:last-child { border-bottom: 0 }
+.perf-rank {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .66rem; font-weight: 800; color: var(--mut);
+  background: var(--off2); flex-shrink: 0;
+}
+.perf-rank.r1 { background: var(--navy); color: #fff }
+.perf-rank.r2 { background: var(--teal); color: #fff }
+.perf-rank.r3 { background: var(--teal-tint); color: var(--teal-d); border: 1px solid var(--teal) }
+.perf-name { font-size: .8rem; font-weight: 700; color: var(--navy); min-width: 72px; flex-shrink: 0 }
+.perf-bar { flex: 1; height: 7px; background: var(--off2); border-radius: 3px; overflow: hidden; min-width: 40px }
+.perf-bar-fill { height: 100%; background: var(--teal); border-radius: 3px }
+.perf-good { font-family: var(--mono); font-size: .8rem; font-weight: 700; color: var(--navy); min-width: 34px; text-align: right; flex-shrink: 0 }
+.perf-eff { font-size: .62rem; font-weight: 800; padding: .12rem .4rem; border-radius: 2px; flex-shrink: 0; min-width: 38px; text-align: center }
+.perf-eff.good { background: #e3f2e9; color: #1d6b40 }
+.perf-eff.warn { background: #f7ecdc; color: #8a5200 }
+.perf-eff.bad  { background: #f8e9e6; color: var(--bad) }
+.perf-delta { font-size: .62rem; font-weight: 700; flex-shrink: 0; min-width: 42px; text-align: right }
+.perf-delta.up { color: #1d6b40 }
+.perf-delta.down { color: var(--bad) }
+.perf-delta.flat { color: var(--mut) }
+.perf-delta.new { color: var(--teal); letter-spacing: .06em }
+@media (max-width: 640px) {
+  .perf-name { min-width: 56px; font-size: .75rem }
+  .perf-delta { display: none }
+}
+
 /* ─── owner dashboard ─── */
 .dash-2col { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin-bottom: .6rem }
 .dash-2col .panel { margin-bottom: 0 }
@@ -1744,10 +1785,13 @@ function computeDashData() {
     jobRows: [], anomalyStations: [], nearingStations: [], lowLifeStations: [],
     costliest: null, invAlerts: [], attention: [],
     lifeRecent: null, lifePrior: null,
+    operatorBoard: [], topToday: null,
   };
 
   let lifeRs = 0, lifeRn = 0, lifePs = 0, lifePn = 0;
   const noLogToday = [];
+  const opAgg = {}, opAggPrior = {}; // this-week / prior-week per-operator totals
+  const opBucket = (map, name) => { if (!map[name]) map[name] = { name, good: 0, rejected: 0, produced: 0, entries: 0, todayGood: 0, todayRejected: 0 }; return map[name]; };
 
   (db.jobs || []).forEach(job => {
     const status = job.status || 'active';
@@ -1773,6 +1817,19 @@ function computeDashData() {
       if (b) { b.qty += q; b.rej += (q - g); }
       if (ts >= todayStart) { out.prodToday += q; todayQty += q; }
       if (ts >= weekStart) out.prodWeek += q;
+
+      // Per-operator performance: this week vs the prior week, for the leaderboard
+      const opName = (e.operator || '').trim();
+      if (opName) {
+        if (ts >= weekStart) {
+          const a = opBucket(opAgg, opName);
+          a.good += g; a.rejected += (q - g); a.produced += q; a.entries++;
+          if (ts >= todayStart) { a.todayGood += g; a.todayRejected += (q - g); }
+        } else if (ts.getTime() >= d14) {
+          const a = opBucket(opAggPrior, opName);
+          a.good += g; a.produced += q;
+        }
+      }
     });
 
     out.totalProduced += jobProduced;
@@ -1826,6 +1883,19 @@ function computeDashData() {
   out.jobRows.sort((a, b) => a.priority - b.priority || (b.good / (b.batch || Infinity)) - (a.good / (a.batch || Infinity)));
   if (lifeRn) out.lifeRecent = Math.round(lifeRs / lifeRn);
   if (lifePn) out.lifePrior = Math.round(lifePs / lifePn);
+
+  // Operator leaderboard — ranked by good pieces this week (rolling), with a
+  // week-over-week delta so the owner sees who's improving, not just totals.
+  out.operatorBoard = Object.values(opAgg)
+    .map(a => ({
+      name: a.name, good: a.good, rejected: a.rejected, produced: a.produced, entries: a.entries,
+      effPct: a.produced > 0 ? Math.round((a.good / a.produced) * 100) : null,
+      todayGood: a.todayGood, todayRejected: a.todayRejected,
+      priorGood: opAggPrior[a.name] ? opAggPrior[a.name].good : null,
+    }))
+    .sort((a, b) => b.good - a.good)
+    .slice(0, 8);
+  out.topToday = out.operatorBoard.reduce((best, o) => (o.todayGood > 0 && (!best || o.todayGood > best.todayGood)) ? o : best, null);
 
   // Inventory alerts — linked-station needs first, then generic
   const linkedNeed = {};
@@ -1917,6 +1987,50 @@ function vDashboard() {
         <div class="s-stat"><div class="lbl">Today</div><div><span class="s-val">${fmtN(d.prodToday)}</span></div><div class="s-sub">Pcs logged</div></div>
         <div class="s-stat"><div class="lbl">This Week</div><div><span class="s-val">${fmtN(d.prodWeek)}</span></div><div class="s-sub">Last 7 days</div></div>
       </div>
+    </div>`;
+
+  const topPerfHtml = d.topToday ? `
+    <div class="perf-hero">
+      <div class="perf-hero-crown">&#127942;</div>
+      <div class="perf-hero-body">
+        <div class="perf-hero-lbl">Today's Top Performer</div>
+        <div class="perf-hero-name">${esc(d.topToday.name)}</div>
+        <div class="perf-hero-stat">${fmtN(d.topToday.todayGood)} pcs today${d.topToday.todayGood + d.topToday.todayRejected > 0 ? ` &middot; ${Math.round(d.topToday.todayGood / (d.topToday.todayGood + d.topToday.todayRejected) * 100)}% good` : ''}</div>
+      </div>
+    </div>` : '';
+
+  const maxOpGood = Math.max(1, ...d.operatorBoard.map(o => o.good));
+  const perfRows = d.operatorBoard.map((o, i) => {
+    const barPct = Math.round((o.good / maxOpGood) * 100);
+    const effCls = o.effPct == null ? '' : o.effPct >= 95 ? 'good' : o.effPct >= 85 ? 'warn' : 'bad';
+    let delta = '';
+    if (o.priorGood != null && o.priorGood > 0) {
+      const pct = Math.round(((o.good - o.priorGood) / o.priorGood) * 100);
+      delta = pct === 0 ? '<span class="perf-delta flat">&#8212;</span>'
+        : pct > 0 ? `<span class="perf-delta up">&#9650; ${pct}%</span>`
+        : `<span class="perf-delta down">&#9660; ${Math.abs(pct)}%</span>`;
+    } else if (o.priorGood == null) {
+      delta = '<span class="perf-delta new">NEW</span>';
+    }
+    return `
+      <div class="perf-row">
+        <span class="perf-rank r${i + 1 <= 3 ? i + 1 : ''}">${i + 1}</span>
+        <span class="perf-name">${esc(o.name)}</span>
+        <div class="perf-bar"><div class="perf-bar-fill" style="width:${barPct}%"></div></div>
+        <span class="perf-good">${fmtN(o.good)}</span>
+        ${o.effPct != null ? `<span class="perf-eff ${effCls}">${o.effPct}%</span>` : ''}
+        ${delta}
+      </div>`;
+  }).join('');
+
+  const perfHtml = `
+    <div class="panel" style="margin-bottom:.6rem">
+      <div class="panel-hd"><span class="lbl">Operator Performance</span><div class="hr"></div><span class="lbl muted">This week</span></div>
+      ${topPerfHtml}
+      ${d.operatorBoard.length ? `
+        <div class="perf-list">${perfRows}</div>
+        <div style="padding:.5rem 1rem .6rem;font-size:.66rem;color:var(--mut);border-top:1px solid var(--rule2)">Efficiency = good pieces &divide; total logged, last 7 days. Arrow compares to the 7 days before that.</div>`
+      : `<div style="padding:.8rem 1rem;font-size:.75rem;color:var(--mut)">Once operators log production under their name, you'll see who's leading here.</div>`}
     </div>`;
 
   const jobRowsShown = d.jobRows.slice(0, 30);
@@ -2024,6 +2138,7 @@ function vDashboard() {
   return `
     ${attHtml}
     ${summaryHtml}
+    ${perfHtml}
     ${jobsHtml}
     <div class="dash-2col">
       ${healthHtml}
