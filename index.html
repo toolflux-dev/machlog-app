@@ -458,6 +458,9 @@ main { max-width: 1280px; margin: 0 auto; padding: 1.2rem 1.4rem 6rem }
   font-size: .75rem; color: #7a5800;
 }
 .trial-bar-txt { flex: 1 }
+/* lapsed subscription — read-only, data still visible */
+.trial-bar.ro-bar { background: #fdeceb; border-bottom-color: #d98b80; color: #8a2c1d }
+.trial-bar.ro-bar .btn-trial-sub { background: var(--bad); color: #fff }
 .btn-trial-sub {
   background: #e6b800; color: #1a1200; border: none;
   padding: .28rem .8rem; font-size: .72rem; font-weight: 700;
@@ -1656,9 +1659,32 @@ function getTrialDaysLeft() {
   return Math.max(0, Math.ceil((ts + TRIAL_DAYS * MS_DAY - effectiveNow()) / MS_DAY));
 }
 
+// ── read-only (lapsed subscription) ───────────────────────────────
+// When the subscription ends the shop keeps ALL its data and can still read,
+// print and export it — only new entries and edits are blocked. Locking an
+// owner out of their own production history would be hostile and pointless.
+function isReadOnly() {
+  if (isOperatorDevice()) return false; // operators ride the owner's licence
+  return getLicenseStatus() === 'expired';
+}
+
+// Gate for every user-initiated write. Returns false (and nudges) when lapsed.
+function requireActive() {
+  if (!isReadOnly()) return true;
+  toast('Subscription ended — subscribe to add or change data', 'bad');
+  return false;
+}
+
 function trialBanner() {
-  if (getLicenseStatus() !== 'trial') return '';
   if (hasOwnerPin() && !isOwner()) return ''; // operators don't see subscription info
+  if (isOperatorDevice()) return '';
+  if (isReadOnly()) {
+    return `<div class="trial-bar ro-bar">
+      <span class="trial-bar-txt"><strong>Read-only</strong> — subscription ended. Your data is safe and still viewable; subscribe to log production again.</span>
+      <button class="btn-trial-sub" onclick="navigate('paywall')">Subscribe &#8377;299/mo</button>
+    </div>`;
+  }
+  if (getLicenseStatus() !== 'trial') return '';
   const days = getTrialDaysLeft();
   return `<div class="trial-bar">
     <span class="trial-bar-txt"><strong>${days} day${days !== 1 ? 's' : ''} left</strong> in your free trial</span>
@@ -1771,7 +1797,7 @@ function removeOperator(id) {
 
 function submitAddOperator(e) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const inp = document.getElementById('team-op-name');
   const op = addOperatorToTeam(inp ? inp.value : '');
   if (op) { toast(`${op.name} added — send them the link`, 'ok'); render(); }
@@ -2969,7 +2995,7 @@ function vJobs() {
       <h2>Component Jobs</h2>
       ${owner ? `<div style="display:flex;gap:.45rem;flex-wrap:wrap">
         <button class="btn btn-ghost" onclick="exportToExcel()" title="Export all data to Excel">&#8595; Excel</button>
-        <button class="btn btn-pri" onclick="navigate('newjob')">+ New Job</button>
+        ${isReadOnly() ? '' : `<button class="btn btn-pri" onclick="navigate('newjob')">+ New Job</button>`}
       </div>` : ''}
     </div>`;
 
@@ -3214,7 +3240,7 @@ function setActiveOp(jobId, opId) {
 }
 
 function addOperation(jobId) {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const n = (job.operations || []).length + 1;
@@ -3331,13 +3357,13 @@ function vJobDetail() {
         </div>
       </div>
       <div class="hero-acts">
-        <button class="btn btn-teal btn-lg" onclick="toggleLogForm()">${ui.logOpen ? '&#10005; Close' : '+ Log Production'}</button>
+        ${isReadOnly() ? '' : `<button class="btn btn-teal btn-lg" onclick="toggleLogForm()">${ui.logOpen ? '&#10005; Close' : '+ Log Production'}</button>`}
         <button class="btn btn-ghost" onclick="navigate('shift')">Shift Proof</button>
         ${owner ? `<button class="btn btn-ghost" onclick="navigate('report',{jobId:'${job.id}'})">Owner Report</button>` : ''}
       </div>
     </div>
 
-    ${ui.logOpen ? `<div id="log-form-container" style="margin-top:.85rem">${buildLogForm(job)}</div>` : ''}
+    ${ui.logOpen && !isReadOnly() ? `<div id="log-form-container" style="margin-top:.85rem">${buildLogForm(job)}</div>` : ''}
 
     ${jc.totalAnomalies ? `
       <div class="anomaly-flag" style="margin-top:.85rem">
@@ -4361,7 +4387,7 @@ function buildInvPasteImport() {
 
 function submitAddInventory(e) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const desig = ($('#inv-desig') || {}).value.trim();
   if (!desig) return;
   const item = {
@@ -4381,7 +4407,7 @@ function submitAddInventory(e) {
 }
 
 function deleteInventoryItem(id) {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   if (!confirm('Remove this item from inventory?')) return;
   db.inventory = db.inventory.filter(i => i.id !== id);
   saveDB();
@@ -4390,7 +4416,7 @@ function deleteInventoryItem(id) {
 }
 
 function importInvPaste() {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const raw = ($('#inv-paste') || {}).value || '';
   if (!raw.trim()) { toast('Nothing to import', 'bad'); return; }
   const lines = raw.trim().split('\n').map(l => l.split('\t'));
@@ -4568,13 +4594,12 @@ function render() {
 
   let html = '';
   try {
-    const licStatus = getLicenseStatus();
-    // Operators ride on the owner's subscription — their device never paywalls.
-    const showPaywall = (ui.view === 'setup' || isOperatorDevice()) ? false
-      : (licStatus === 'expired' || ui.view === 'paywall');
+    // A lapsed subscription no longer walls off the app — the shop keeps
+    // reading its data and the paywall is only shown when explicitly opened.
+    const showPaywall = ui.view === 'paywall' && !isOperatorDevice();
 
     if (ui.view === 'setup')       html = vSetup();
-    else if (!isOwner() && (showPaywall || OWNER_VIEWS.includes(ui.view))) html = vOperatorLocked(showPaywall);
+    else if (!isOwner() && OWNER_VIEWS.includes(ui.view)) html = vOperatorLocked(false);
     else if (showPaywall)          html = vPaywall();
     else if (ui.view === 'jobs')   html = vJobs();
     else if (ui.view === 'newjob') html = vNewJob();
@@ -4620,7 +4645,7 @@ function focusQtyMobile() {
   if (window.innerWidth > 640) return;
   setTimeout(() => { const q = document.getElementById('lp-qty'); if (q) q.focus(); }, 80);
 }
-function toggleAddStation() { if (!requireOwner()) return; ui.addStationOpen = !ui.addStationOpen; render(); }
+function toggleAddStation() { if (!requireOwner() || !requireActive()) return; ui.addStationOpen = !ui.addStationOpen; render(); }
 
 function adjQty(n) {
   const inp = $('#lp-qty');
@@ -4628,7 +4653,7 @@ function adjQty(n) {
 }
 
 function setJobStatus(jobId, status) {
-  if (!requireOwner()) { render(); return; }
+  if (!requireOwner() || !requireActive()) { render(); return; }
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   job.status = status;
@@ -4638,7 +4663,7 @@ function setJobStatus(jobId, status) {
 
 function submitNewJob(e) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const code = $('#nj-code').value.trim();
   if (!code) { toast('Component code is required', 'bad'); return; }
   const job = {
@@ -4701,7 +4726,7 @@ function readStationFields(opType) {
 
 function submitAddStation(e, jobId) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const name = (g => g ? g.value.trim() : '')($('#sf-name'));
@@ -4738,7 +4763,7 @@ function submitAddStation(e, jobId) {
 
 function submitEditStation(e, jobId, stationId) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   const st = job && jobAllStations(job).find(s => s.id === stationId);
   if (!st) return;
@@ -4756,10 +4781,11 @@ function submitEditStation(e, jobId, stationId) {
   render();
 }
 
-function toggleEditStation() { if (!requireOwner()) return; ui.editStationOpen = !ui.editStationOpen; render(); }
+function toggleEditStation() { if (!requireOwner() || !requireActive()) return; ui.editStationOpen = !ui.editStationOpen; render(); }
 
 function submitLogProduction(e, jobId) {
   e.preventDefault();
+  if (!requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   // The qty input's max="9999" is a UI hint only — a value set programmatically
@@ -4832,7 +4858,7 @@ function applyProductionEntry(job, entry) {
 }
 
 function openLogEdit(jobId, entryId) {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const entry = (job.productionLog || []).find(e => e.id === entryId);
@@ -4883,7 +4909,7 @@ function openLogEdit(jobId, entryId) {
 
 function saveLogEdit(e, jobId, entryId) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
   const entry = (job.productionLog || []).find(en => en.id === entryId);
@@ -4983,6 +5009,7 @@ function processStationEvent(st, ev) {
 }
 
 function loadFirstSet(jobId, stationId) {
+  if (!requireActive()) return;
   if (isOperatorDevice()) { toast('Record insert changes inside "+ Log Production"', 'warn'); return; }
   const job = db.jobs.find(j => j.id === jobId);
   const st = job && jobAllStations(job).find(s => s.id === stationId);
@@ -5001,6 +5028,7 @@ function loadFirstSet(jobId, stationId) {
 }
 
 function loadNewSet(jobId, stationId) {
+  if (!requireActive()) return;
   if (isOperatorDevice()) { toast('Record insert changes inside "+ Log Production"', 'warn'); return; }
   const job = db.jobs.find(j => j.id === jobId);
   const st = job && jobAllStations(job).find(s => s.id === stationId);
@@ -5027,6 +5055,7 @@ function loadNewSet(jobId, stationId) {
 // One-tap corner index from the station screen — reuses the exact event
 // processing the log-production tooling section uses.
 function quickIndexCorner(jobId, stationId) {
+  if (!requireActive()) return;
   if (isOperatorDevice()) { toast('Record insert changes inside "+ Log Production"', 'warn'); return; }
   const job = db.jobs.find(j => j.id === jobId);
   const st = job && jobAllStations(job).find(s => s.id === stationId);
@@ -5042,7 +5071,7 @@ function quickIndexCorner(jobId, stationId) {
 }
 
 function confirmDeleteStation(jobId, stationId) {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   if (!confirm('Delete this tooling station and all its insert history? This cannot be undone.')) return;
   const job = db.jobs.find(j => j.id === jobId);
   if (!job) return;
@@ -5077,7 +5106,7 @@ function submitSetup(e) {
 
 function submitSettings(e) {
   e.preventDefault();
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   db.settings.company = $('#st-co').value.trim();
   db.settings.defaultOperator = $('#st-op').value.trim();
   db.settings.defaultMachine = $('#st-mach').value.trim();
@@ -5234,7 +5263,7 @@ function exportToExcel() {
 }
 
 function importData() {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.json';
   inp.onchange = e => {
@@ -5274,7 +5303,7 @@ function quickLog(jobId) {
 }
 
 function confirmClearAll() {
-  if (!requireOwner()) return;
+  if (!requireOwner() || !requireActive()) return;
   if (!confirm('Delete ALL jobs and history? This cannot be undone.')) return;
   db = blankDB();
   saveDB();
