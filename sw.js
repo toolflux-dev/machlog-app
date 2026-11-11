@@ -1,7 +1,7 @@
 /* TOOLFLUX Machining Log — service worker
    Network-first for the page itself (so updates always flow through),
    cache fallback so the installed app opens with no internet at all. */
-const CACHE = 'machlog-v2';
+const CACHE = 'machlog-v3';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./'])).catch(() => {}));
